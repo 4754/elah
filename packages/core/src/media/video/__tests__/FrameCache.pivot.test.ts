@@ -132,4 +132,64 @@ describe('FrameCache — pivot-aware eviction', () => {
     expect(cache.has(12)).toBe(false)
     expect(cache.has(20)).toBe(true)
   })
+
+  it('backward scrub: evicts ahead-of-pivot lookahead first, preserving the keyframe→pivot run', () => {
+    const cache = new FrameCache(6)
+
+    // Forward play buffered 28..33.
+    cache.setPivot(30)
+    for (let k = 28; k <= 33; k++) cache.put(k, mockFrame())
+
+    // User scrubs backward to 20; the backward seek decodes the keyframe run
+    // 18..20. Every put must sacrifice stale lookahead (33, 32, 31), never the
+    // behind-pivot frames the continuing backward scrub is about to display.
+    cache.setPivot(20)
+    for (let k = 20; k >= 18; k--) cache.put(k, mockFrame())
+
+    expect(cache.has(18)).toBe(true)
+    expect(cache.has(19)).toBe(true)
+    expect(cache.has(20)).toBe(true)
+    expect(cache.has(33)).toBe(false)
+    expect(cache.has(32)).toBe(false)
+    expect(cache.has(31)).toBe(false)
+    // Nearest survivors from before the scrub are kept.
+    expect(cache.has(28)).toBe(true)
+    expect(cache.has(29)).toBe(true)
+    expect(cache.has(30)).toBe(true)
+  })
+
+  it('backward scrub falls back to behind-pivot eviction once nothing remains ahead', () => {
+    const cache = new FrameCache(3)
+
+    cache.setPivot(10)
+    cache.put(8, mockFrame())
+    cache.put(9, mockFrame())
+    cache.put(10, mockFrame())
+
+    // Backward move with no ahead-of-pivot frames cached: evict furthest behind.
+    cache.setPivot(9)
+    cache.put(5, mockFrame())
+
+    expect(cache.has(5)).toBe(true)
+    expect(cache.has(10)).toBe(false)
+    expect(cache.has(8)).toBe(true)
+    expect(cache.has(9)).toBe(true)
+  })
+
+  it('resuming forward play after a backward scrub restores behind-first eviction', () => {
+    const cache = new FrameCache(3)
+
+    cache.setPivot(10)
+    cache.put(8, mockFrame())
+    cache.put(9, mockFrame())
+    cache.put(10, mockFrame())
+    cache.setPivot(6) // backward…
+    cache.setPivot(11) // …then forward again
+
+    cache.put(12, mockFrame())
+
+    // Forward mode: the stale behind frame (8) goes, the fresh lookahead stays.
+    expect(cache.has(8)).toBe(false)
+    expect(cache.has(12)).toBe(true)
+  })
 })

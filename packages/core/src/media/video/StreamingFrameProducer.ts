@@ -34,6 +34,14 @@ const DEFAULT_FPS = 30
 // frame-lifecycle-and-decode-stall.md and renderer/architecture.md §6.5.
 const DEFAULT_LOOKAHEAD_FRAMES = 16
 const DEFAULT_MAX_FRAMES = 30
+// Byte budget for the decoded-frame cache. 1080p RGBA is ~7.9 MB/frame, so
+// 256 MiB holds ~32 frames — matching the historical 30-frame count-only
+// behavior. At 4K (~31.6 MB/frame) the SAME budget holds only ~8 frames,
+// which is the actual fix: without a byte bound, the count bound alone let a
+// 4K source pin ~1 GB per provider, which is what VideoLayer's idle-provider
+// cap (DEFAULT_MAX_IDLE_PROVIDERS) assumes can't happen. Keep in sync with
+// the comment on that constant.
+const DEFAULT_MAX_CACHE_BYTES = 256 * 1024 * 1024
 
 /**
  * Fallback used only when `createImageBitmap` is unavailable (jsdom/vitest).
@@ -176,6 +184,7 @@ export class StreamingFrameProducer implements VideoFrameProvider {
 
     this._cache = new FrameCache<ImageBitmap>({
       maxFrames: opts.maxFrames ?? DEFAULT_MAX_FRAMES,
+      maxBytes: DEFAULT_MAX_CACHE_BYTES,
       hooks: opts.cacheHooks,
     })
 
