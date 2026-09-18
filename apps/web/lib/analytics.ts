@@ -16,11 +16,14 @@ interface AnalyticsProvider {
   send: (event: AnalyticsEventName, props: EventProps) => void
 }
 
-// posthog is always init'd but opted-out (instrumentation-client.ts), so
-// capture() is safe unconditionally and silently drops pre-consent.
+// posthog is initialized only when NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN is present (instrumentation-client.ts)
+// and starts opted-out, so capture() is safe unconditionally and silently drops pre-consent.
 const posthogProvider: AnalyticsProvider = {
   name: 'posthog',
-  send: (event, props) => posthog.capture(event, props),
+  send: (event, props) => {
+    if (!process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN) return
+    posthog.capture(event, props)
+  },
 }
 
 // window.rdt is undefined until the pixel script loads (post-consent, see

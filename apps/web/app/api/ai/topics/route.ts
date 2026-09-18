@@ -50,17 +50,19 @@ export async function POST(req: NextRequest) {
   try {
     const distinctId = distinctIdFromRequest(req)
     const posthog = getPostHogClient()
-    posthog.capture({
-      distinctId: distinctId ?? 'server',
-      event: 'ai_topics_generated',
-      properties: {
-        options_count: options.length,
-        // Without a browser id there is no real person to attach to; skip the
-        // profile rather than minting a throwaway one per request.
-        ...(distinctId ? {} : { $process_person_profile: false }),
-      },
-    })
-    await posthog.flush()
+    if (posthog) {
+      posthog.capture({
+        distinctId: distinctId ?? 'server',
+        event: 'ai_topics_generated',
+        properties: {
+          options_count: options.length,
+          // Without a browser id there is no real person to attach to; skip the
+          // profile rather than minting a throwaway one per request.
+          ...(distinctId ? {} : { $process_person_profile: false }),
+        },
+      })
+      await posthog.flush()
+    }
   } catch {
     // swallowed by design
   }

@@ -38,6 +38,7 @@ function detectDnt(): boolean {
 // Reflect the choice into PostHog. init() runs opted-out by default
 // (instrumentation-client.ts), so capturing only starts once granted.
 function syncPosthog(consent: Consent) {
+  if (!process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN) return
   try {
     if (consent === 'granted') posthog.opt_in_capturing()
     else posthog.opt_out_capturing()
