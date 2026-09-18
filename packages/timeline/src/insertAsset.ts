@@ -7,18 +7,39 @@ import type {
   Track,
   TrackKind,
 } from '@elah/core'
-import { clipsOverlap, secondsToFrames, mediaLibraryStore, playbackStore } from '@elah/core'
+import {
+  clipsOverlap,
+  determineAssetHasAudio,
+  mediaLibraryStore,
+  playbackStore,
+  secondsToFrames,
+} from '@elah/core'
 import { useAudioDropDialogStore } from './audioDropDialog.store'
 import type { DragElementPayload } from './elementDrag'
 
 /** Default on-timeline length for a freshly inserted synthetic element, in seconds. */
 const DEFAULT_TEXT_DURATION_SEC = 3
 
+/**
+ * Longest an insert waits on the audio-track probe before giving up and using
+ * whatever the media library currently believes. The probe only range-reads the
+ * container, so this is a stalled-network guard, not a normal code path.
+ */
+const HAS_AUDIO_PROBE_TIMEOUT_MS = 4000
+
 type MediaClipType = Extract<ClipType, 'video' | 'audio' | 'image'>
 
 export interface InsertAssetOptions {
   desiredStartFrame?: number
   targetTrackId?: string
+  /**
+   * Skip the video/audio split prompt for a video that carries audio and insert
+   * the video alone, without ever probing the container for audio.
+   *
+   * Set by callers that have already decided — batch "add to editor" actions
+   * and anything else that wants no user interruption.
+   */
+  videoOnly?: boolean
 }
 
 export type InsertAssetFailureReason =
@@ -312,9 +333,43 @@ function elementRefusal(reason: InsertAssetFailureReason): InsertAssetResult {
 }
 
 /**
+ * Whether this video should trigger the video/audio split prompt.
+ *
+ * `asset.hasAudio` on its own is not trustworthy at insert time: it is seeded
+ * from a browser probe that reports `false` for every video in Chromium, and an
+ * asset created via import still carries the placeholder seed if nothing has
+ * probed it yet. `determineAssetHasAudio` reads the container instead — cheap,
+ * and usually already resolved because import kicks it off.
+ */
+async function videoHasAudio(asset: MediaAsset): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      determineAssetHasAudio(asset.id),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(asset.hasAudio ?? false), HAS_AUDIO_PROBE_TIMEOUT_MS)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
  * Insert a media asset using the same adapter that backs timeline drag-drop.
  * The helper owns target-track lookup for tap insertion, keeping SDK panels
  * from duplicating timeline placement and audio-dialog rules.
+ *
+ * The clip is placed BEFORE the audio question is asked, and that ordering is
+ * the point. `videoHasAudio` reads the container, which for a source that
+ * cannot be range-read means downloading the file — up to the four-second
+ * guard below. Waiting on it first meant the drop did nothing at all for those
+ * seconds: no clip, no progress, nothing to undo. Now the clip appears on the
+ * frame the user let go, and the audio split — the rarer branch, and one the
+ * dialog is already interrupting them for — arrives after.
+ *
+ * The cost is that splitting the audio out is a second undo step rather than
+ * part of the insert. That is the right trade against a visibly dead drop.
  */
 export async function insertMediaAsset(
   engine: TimelineEngine,
@@ -331,75 +386,92 @@ export async function insertMediaAsset(
   const fps = engine.getProject().fps
   const fullDuration = Math.max(
     1,
-    asset.durationSec > 0 ? secondsToFrames(asset.durationSec, fps) : fps * 5,
+    asset.durationSec > 0 && Number.isFinite(asset.durationSec)
+      ? secondsToFrames(asset.durationSec, fps)
+      : fps * 5,
   )
 
-  if (asset.kind !== 'video' || !asset.hasAudio) {
-    const run = (): InsertAssetResult => {
-      const r = resolveOn(engine, target.trackId, desiredStart, fullDuration)
-      const clip = addMediaClip(
-        engine,
-        target.trackId,
-        mediaKindToClipType(asset.kind),
-        asset,
-        r.startFrame,
-        r.durationFrames,
-      )
-      return { ok: true, kind: asset.kind, trackId: target.trackId, clipIds: [clip.id] }
-    }
-
-    if (!target.created) return run()
-
-    let result: InsertAssetResult = mediaRefusal(asset.kind, 'no-track')
-    engine.batch(() => {
-      result = run()
-    }, 'Add media')
-    return result
+  const placeOnTarget = (): InsertAssetResult => {
+    const r = resolveOn(engine, target.trackId, desiredStart, fullDuration)
+    const clip = addMediaClip(
+      engine,
+      target.trackId,
+      mediaKindToClipType(asset.kind),
+      asset,
+      r.startFrame,
+      r.durationFrames,
+    )
+    return { ok: true, kind: asset.kind, trackId: target.trackId, clipIds: [clip.id] }
   }
 
-  const choice = await useAudioDropDialogStore.getState().request(asset.name)
-  if (!choice) return mediaRefusal(asset.kind, 'cancelled')
+  let placed: InsertAssetResult = mediaRefusal(asset.kind, 'no-track')
+  if (target.created) {
+    // The track this created and the clip on it are one action to undo.
+    engine.batch(() => {
+      placed = placeOnTarget()
+    }, 'Add media')
+  } else {
+    placed = placeOnTarget()
+  }
+  if (!placed.ok) return placed
 
-  let result: InsertAssetResult = mediaRefusal(asset.kind, 'cancelled')
+  // Everything below is the video/audio split. An image, an audio file, or a
+  // caller that has already decided is finished here.
+  if (asset.kind !== 'video' || opts.videoOnly) return placed
+
+  const videoClipId = placed.clipIds[0]
+  if (!(await videoHasAudio(asset))) return placed
+
+  // `null` means a newer drop superseded this dialog. The video clip stays
+  // either way — it is already on the timeline and the user can see it.
+  const choice = await useAudioDropDialogStore.getState().request(asset.name)
+  if (!choice || choice === 'video-only') return placed
+
+  // Read the placement back rather than reusing `desiredStart`: the dialog was
+  // open for as long as the user took to answer, and they may have dragged the
+  // clip in the meantime. The audio follows where the video actually is.
+  const current = engine.findClip(videoClipId)
+  if (!current) return placed // deleted while the dialog was open
+  const { startFrame, durationFrames } = current.clip
+
+  // The lane it may have to create, the clip, and (for audio-only) the removal
+  // of the video clip are one action to undo. `batch` records nothing when the
+  // recipe makes no net change, so bailing out inside it costs no history entry.
+  let result = placed
   engine.batch(() => {
-    if (choice === 'video-only') {
-      const v = resolveOn(engine, target.trackId, desiredStart, fullDuration)
-      const clip = addMediaClip(engine, target.trackId, 'video', asset, v.startFrame, v.durationFrames)
-      result = { ok: true, kind: asset.kind, trackId: target.trackId, clipIds: [clip.id] }
-    } else if (choice === 'both') {
-      // Resolve against BOTH tracks at once so the pair lands where neither
-      // track is occupied; they stay frame-synced and never overlap.
-      const audioTarget = ensureAudioTrack(engine)
-      if (!audioTarget.ok) {
-        result = mediaRefusal(asset.kind, audioTarget.reason)
-        return
-      }
-      const videoClips = clipsOn(engine, target.trackId)
-      const audioClips = clipsOn(engine, audioTarget.trackId)
-      const r = resolveDropPosition(
-        [...videoClips, ...audioClips],
-        desiredStart,
-        fullDuration,
-      )
-      const video = addMediaClip(engine, target.trackId, 'video', asset, r.startFrame, r.durationFrames)
-      const audio = addMediaClip(engine, audioTarget.trackId, 'audio', asset, r.startFrame, r.durationFrames)
-      result = {
-        ok: true,
-        kind: asset.kind,
-        trackId: target.trackId,
-        clipIds: [video.id, audio.id],
-      }
-    } else {
-      const audioTarget = ensureAudioTrack(engine)
-      if (!audioTarget.ok) {
-        result = mediaRefusal(asset.kind, audioTarget.reason)
-        return
-      }
-      const a = resolveOn(engine, audioTarget.trackId, desiredStart, fullDuration)
-      const clip = addMediaClip(engine, audioTarget.trackId, 'audio', asset, a.startFrame, a.durationFrames)
-      result = { ok: true, kind: asset.kind, trackId: audioTarget.trackId, clipIds: [clip.id] }
-    }
-  }, 'Add media')
+    const audioTarget = ensureAudioTrack(engine)
+    // No lane to put the audio on. The video clip is already placed and
+    // visible, so this is not a failed insert — it is a split that could not
+    // happen, and `placed` stays the answer.
+    if (!audioTarget.ok) return
+
+    if (choice === 'audio-only') engine.removeClip(videoClipId, current.trackId)
+
+    const a = resolveOn(engine, audioTarget.trackId, startFrame, durationFrames)
+    const audio = addMediaClip(
+      engine,
+      audioTarget.trackId,
+      'audio',
+      asset,
+      a.startFrame,
+      a.durationFrames,
+    )
+
+    result =
+      choice === 'both'
+        ? {
+            ok: true,
+            kind: asset.kind,
+            trackId: target.trackId,
+            clipIds: [videoClipId, audio.id],
+          }
+        : {
+            ok: true,
+            kind: asset.kind,
+            trackId: audioTarget.trackId,
+            clipIds: [audio.id],
+          }
+  }, choice === 'both' ? 'Add audio' : 'Replace with audio')
 
   return result
 }

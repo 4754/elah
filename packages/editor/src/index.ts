@@ -74,7 +74,15 @@ export { warmImageSrc, preloadProjectImages } from '@elah/core'
 export type { ImageLoader, LoadedImage } from '@elah/core'
 
 // --- Media library ---
-export { MEDIA_DRAG_MIME, mediaDragKindMime, importFiles, importUrl, importBlob } from '@elah/core'
+export {
+  MEDIA_DRAG_MIME,
+  mediaDragKindMime,
+  importFiles,
+  importUrl,
+  importBlob,
+  determineAssetHasAudio,
+  probeHasAudio,
+} from '@elah/core'
 export { useMediaLibrary, useAssets, useMediaLibraryStore } from '@elah/react'
 export type {
   MediaAsset,

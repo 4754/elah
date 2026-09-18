@@ -1,6 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+// The real determination reads the media container over the network. Stub it to
+// echo the library's `hasAudio`, which is what the old code read directly —
+// individual tests override it to model a probe that disagrees with the seed.
+vi.mock('@elah/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@elah/core')>()
+  return {
+    ...actual,
+    determineAssetHasAudio: vi.fn(async (assetId: string) =>
+      Boolean(actual.mediaLibraryStore.getState().getAsset(assetId)?.hasAudio),
+    ),
+  }
+})
+
 import {
   TimelineEngine,
+  determineAssetHasAudio,
   mediaLibraryStore,
   playbackStore,
   type MediaAsset,
@@ -21,6 +36,7 @@ afterEach(() => {
     request: originalAudioRequest,
     respond: originalAudioRespond,
   })
+  vi.mocked(determineAssetHasAudio).mockClear()
   vi.restoreAllMocks()
 })
 
@@ -117,7 +133,7 @@ describe('insertMediaAsset', () => {
     ])
   })
 
-  it('keeps video-with-audio insertion in one undo batch', async () => {
+  it('places the video clip, then the audio split, as two undo steps', async () => {
     const engine = new TimelineEngine({ fps: 30 })
     const videoTrack = engine.getProject().tracks[0]
     addAsset({
@@ -146,10 +162,190 @@ describe('insertMediaAsset', () => {
       durationFrames: 60,
     })
 
+    // The split is its own step because the video clip was placed before the
+    // dialog was even asked — see the note on `insertMediaAsset`. Undoing it
+    // takes the audio lane and its clip, and leaves the video where it is.
+    expect(engine.undo()).toBe(true)
+    expect(engine.getProject().tracks.some((t) => t.kind === 'audio')).toBe(false)
+    expect(engine.getClipsOnTrack(videoTrack.id)).toHaveLength(1)
+
     expect(engine.undo()).toBe(true)
     expect(engine.canUndo()).toBe(false)
-    expect(engine.getProject().tracks.some((t) => t.kind === 'audio')).toBe(false)
     expect(engine.getClipsOnTrack(videoTrack.id)).toHaveLength(0)
+  })
+
+  it('places the clip before the audio probe answers', async () => {
+    // The whole point of the reorder: a drop must not look dead while a
+    // container read that can take seconds is in flight.
+    const engine = new TimelineEngine({ fps: 30 })
+    const videoTrack = engine.getProject().tracks[0]
+    addAsset({ id: 'asset-slow', kind: 'video', durationSec: 2, hasAudio: true })
+
+    let answerProbe!: (hasAudio: boolean) => void
+    vi.mocked(determineAssetHasAudio).mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        answerProbe = resolve
+      }),
+    )
+    const request = vi.fn(async () => 'video-only' as const)
+    useAudioDropDialogStore.setState({ request })
+
+    const pending = insertMediaAsset(engine, 'asset-slow', { desiredStartFrame: 3 })
+    // Let the synchronous placement and its microtasks flush, without resolving
+    // the probe.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(engine.getClipsOnTrack(videoTrack.id)).toMatchObject([
+      { type: 'video', startFrame: 3, durationFrames: 60 },
+    ])
+    expect(request).not.toHaveBeenCalled()
+
+    answerProbe(true)
+    await expect(pending).resolves.toMatchObject({ ok: true, kind: 'video' })
+    expect(request).toHaveBeenCalledOnce()
+    // 'video-only' leaves exactly what was already on screen.
+    expect(engine.getProject().tracks.some((t) => t.kind === 'audio')).toBe(false)
+    expect(engine.getClipsOnTrack(videoTrack.id)).toHaveLength(1)
+  })
+
+  it('swaps the placed video clip for an audio clip on "audio-only"', async () => {
+    const engine = new TimelineEngine({ fps: 30 })
+    const videoTrack = engine.getProject().tracks[0]
+    addAsset({ id: 'asset-va', kind: 'video', durationSec: 2, hasAudio: true })
+    useAudioDropDialogStore.setState({ request: vi.fn(async () => 'audio-only' as const) })
+
+    const result = await insertMediaAsset(engine, 'asset-va', { desiredStartFrame: 3 })
+
+    const audioTrack = engine.getProject().tracks.find((t) => t.kind === 'audio')
+    expect(result).toMatchObject({ ok: true, kind: 'video', trackId: audioTrack?.id })
+    expect(engine.getClipsOnTrack(videoTrack.id)).toHaveLength(0)
+    expect(engine.getClipsOnTrack(audioTrack!.id)[0]).toMatchObject({
+      type: 'audio',
+      startFrame: 3,
+      durationFrames: 60,
+    })
+
+    // One step back restores the video clip the user watched appear.
+    expect(engine.undo()).toBe(true)
+    expect(engine.getClipsOnTrack(videoTrack.id)).toHaveLength(1)
+  })
+
+  it('follows the video clip when the user moves it while the dialog is open', async () => {
+    const engine = new TimelineEngine({ fps: 30 })
+    const videoTrack = engine.getProject().tracks[0]
+    addAsset({ id: 'asset-va', kind: 'video', durationSec: 2, hasAudio: true })
+    useAudioDropDialogStore.setState({
+      request: vi.fn(async () => {
+        const clip = engine.getClipsOnTrack(videoTrack.id)[0]
+        engine.updateClip(clip.id, videoTrack.id, { startFrame: 90 })
+        return 'both' as const
+      }),
+    })
+
+    await insertMediaAsset(engine, 'asset-va', { desiredStartFrame: 3 })
+
+    const audioTrack = engine.getProject().tracks.find((t) => t.kind === 'audio')
+    expect(engine.getClipsOnTrack(audioTrack!.id)[0]).toMatchObject({
+      type: 'audio',
+      startFrame: 90,
+      durationFrames: 60,
+    })
+  })
+
+  it('keeps the video clip when the dialog is superseded', async () => {
+    const engine = new TimelineEngine({ fps: 30 })
+    const videoTrack = engine.getProject().tracks[0]
+    addAsset({ id: 'asset-va', kind: 'video', durationSec: 2, hasAudio: true })
+    useAudioDropDialogStore.setState({ request: vi.fn(async () => null) })
+
+    const result = await insertMediaAsset(engine, 'asset-va', { desiredStartFrame: 3 })
+
+    // Previously this reported 'cancelled' and placed nothing at all.
+    expect(result).toMatchObject({ ok: true, kind: 'video', trackId: videoTrack.id })
+    expect(engine.getClipsOnTrack(videoTrack.id)).toHaveLength(1)
+  })
+
+  it('keeps the video clip when every audio lane is locked', async () => {
+    const engine = new TimelineEngine({ fps: 30 })
+    const videoTrack = engine.getProject().tracks[0]
+    const lockedAudio = engine.addTrack('audio', { name: 'Locked audio' })
+    engine.updateTrack(lockedAudio.id, { locked: true })
+    addAsset({ id: 'asset-va', kind: 'video', durationSec: 2, hasAudio: true })
+    useAudioDropDialogStore.setState({ request: vi.fn(async () => 'both' as const) })
+
+    const result = await insertMediaAsset(engine, 'asset-va', { desiredStartFrame: 3 })
+
+    // A split that could not happen is not a failed insert.
+    expect(result).toMatchObject({ ok: true, kind: 'video', trackId: videoTrack.id })
+    expect(engine.getClipsOnTrack(videoTrack.id)).toHaveLength(1)
+    expect(engine.getClipsOnTrack(lockedAudio.id)).toHaveLength(0)
+  })
+
+  it('prompts when the audio probe finds audio the imported asset did not know about', async () => {
+    // The gallery imports and inserts in the same click, so
+    // `asset.hasAudio` is still the placeholder seed. Reading it directly is what
+    // dropped lipsync videos onto the timeline silently, with no split prompt.
+    const engine = new TimelineEngine({ fps: 30 })
+    const videoTrack = engine.getProject().tracks[0]
+    addAsset({
+      id: 'asset-pending-video',
+      kind: 'video',
+      durationSec: 2,
+      hasAudio: false,
+    })
+    vi.mocked(determineAssetHasAudio).mockResolvedValueOnce(true)
+    const request = vi.fn(async () => 'both' as const)
+    useAudioDropDialogStore.setState({ request })
+
+    const result = await insertMediaAsset(engine, 'asset-pending-video', { desiredStartFrame: 0 })
+
+    expect(request).toHaveBeenCalledWith('asset-pending-video.mov')
+    expect(result).toMatchObject({ ok: true, kind: 'video', trackId: videoTrack.id })
+    const audioTrack = engine.getProject().tracks.find((t) => t.kind === 'audio')
+    expect(engine.getClipsOnTrack(audioTrack!.id)[0]).toMatchObject({ type: 'audio', startFrame: 0 })
+  })
+
+  it('does not prompt when the audio probe confirms the video is silent', async () => {
+    const engine = new TimelineEngine({ fps: 30 })
+    const videoTrack = engine.getProject().tracks[0]
+    addAsset({ id: 'asset-silent-video', kind: 'video', durationSec: 2, hasAudio: true })
+    vi.mocked(determineAssetHasAudio).mockResolvedValueOnce(false)
+    const request = vi.fn(async () => 'both' as const)
+    useAudioDropDialogStore.setState({ request })
+
+    const result = await insertMediaAsset(engine, 'asset-silent-video', { desiredStartFrame: 0 })
+
+    expect(request).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ ok: true, kind: 'video', trackId: videoTrack.id })
+    expect(engine.getProject().tracks.some((t) => t.kind === 'audio')).toBe(false)
+  })
+
+  it('inserts video-only without prompting when videoOnly is set', async () => {
+    const engine = new TimelineEngine({ fps: 30 })
+    const videoTrack = engine.getProject().tracks[0]
+    addAsset({
+      id: 'asset-video-audio',
+      kind: 'video',
+      durationSec: 2,
+      hasAudio: true,
+    })
+    const request = vi.fn(async () => 'both' as const)
+    useAudioDropDialogStore.setState({ request })
+
+    const result = await insertMediaAsset(engine, 'asset-video-audio', {
+      desiredStartFrame: 3,
+      videoOnly: true,
+    })
+
+    expect(request).not.toHaveBeenCalled()
+    // The caller already decided — don't spend a network probe on the answer.
+    expect(determineAssetHasAudio).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ ok: true, kind: 'video', trackId: videoTrack.id })
+    expect(engine.getProject().tracks.some((t) => t.kind === 'audio')).toBe(false)
+    expect(engine.getClipsOnTrack(videoTrack.id)).toEqual([
+      expect.objectContaining({ type: 'video', startFrame: 3, durationFrames: 60 }),
+    ])
   })
 })
 

@@ -1,6 +1,7 @@
 import { generateId } from '../utils/id'
 import { mediaLibraryStore } from './store'
 import { defaultAudioResolver, type AudioResolver } from '../media/audio/audioResolver'
+import { determineAssetHasAudio, hasAudioDetermined } from './hasAudio'
 import type { MediaAsset, MediaKind } from './types'
 
 export interface ImportFilesOptions {
@@ -54,8 +55,9 @@ const WAVEFORM_PEAK_COUNT = 256
 /**
  * Best-effort, synchronous-at-metadata check for an audio track on a video
  * element. No single API is reliable across browsers, so we layer them and
- * gracefully fall back to `false` (which just means "no audio dialog"). The
- * async audio decode in `analyzeAudio()` later corrects this when it can.
+ * gracefully fall back to `false`. Chromium in particular answers `false` for
+ * every video here — `determineAssetHasAudio()` (container probe) is what
+ * actually decides, and it corrects this seed as soon as it resolves.
  */
 function detectHasAudio(el: HTMLVideoElement): boolean {
   const probe = el as unknown as {
@@ -539,16 +541,24 @@ function scheduleThumbnail(asset: MediaAsset, maxDim: number): void {
 /**
  * Decode audio for video/audio sources. Sets `waveform` for rendering and
  * refines `hasAudio` (the import-time probe is best-effort; this is authoritative).
+ *
+ * A successful decode proves there is audio, so it may promote `hasAudio` to
+ * `true`. A failed one proves nothing — CORS and unsupported codecs fail the
+ * same way silence does — so it only writes `false` while the container probe
+ * (`determineAssetHasAudio`) has yet to answer, and never overrules it.
  */
 function scheduleAudioAnalysis(asset: MediaAsset): void {
   if (asset.kind !== 'audio' && asset.kind !== 'video') return
 
+  const markSilent = () => {
+    if (asset.kind !== 'video' || hasAudioDetermined(asset.id)) return
+    mediaLibraryStore.getState().updateAsset(asset.id, { hasAudio: false })
+  }
+
   void computeWaveform(asset.src)
     .then((waveform) => {
       if (!waveform) {
-        if (asset.kind === 'video') {
-          mediaLibraryStore.getState().updateAsset(asset.id, { hasAudio: false })
-        }
+        markSilent()
         return
       }
       mediaLibraryStore.getState().updateAsset(asset.id, {
@@ -556,12 +566,7 @@ function scheduleAudioAnalysis(asset: MediaAsset): void {
         ...(asset.kind === 'video' ? { hasAudio: true } : {}),
       })
     })
-    .catch(() => {
-      // No decodable audio track (silent/muted video, or unsupported codec).
-      if (asset.kind === 'video') {
-        mediaLibraryStore.getState().updateAsset(asset.id, { hasAudio: false })
-      }
-    })
+    .catch(markSilent)
 }
 
 interface RegisterAssetInput {
@@ -598,6 +603,10 @@ async function registerAsset(input: RegisterAssetInput): Promise<MediaAsset> {
   mediaLibraryStore.getState().addAsset(asset)
   scheduleThumbnail(asset, input.thumbnailMaxDim)
   scheduleAudioAnalysis(asset)
+  // The `hasAudio` seeded above is only the element probe's guess; start the
+  // authoritative container read now so it has settled by the time the asset is
+  // dropped on the timeline and the video/audio split prompt has to decide.
+  if (asset.kind === 'video') void determineAssetHasAudio(asset.id)
 
   return asset
 }
