@@ -212,8 +212,14 @@ export class PlaybackEngine {
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
-  /** Must be called when the engine is discarded — cancels the RAF loop and drops listeners so the clock can't leak. */
-  destroy(): void {
+  /**
+   * Stop the clock and release the document listener, leaving the engine
+   * reusable. Unlike `destroy()`, this is reversible via `attach()` — which is
+   * what a React effect cleanup needs, since StrictMode runs cleanup and then
+   * re-runs the effect against the very same instance.
+   */
+  detach(): void {
+    this.pause()
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId)
       this.rafId = null
@@ -221,6 +227,19 @@ export class PlaybackEngine {
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibility)
     }
+  }
+
+  /** Re-arm after `detach()`. Idempotent — `onVisibility` is a stable bound field. */
+  attach(): void {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibility)
+      document.addEventListener('visibilitychange', this.onVisibility)
+    }
+  }
+
+  /** Must be called when the engine is discarded — cancels the RAF loop and drops listeners so the clock can't leak. */
+  destroy(): void {
+    this.detach()
     this.listeners.clear()
     this.timeupdateListeners.clear()
   }
@@ -241,7 +260,12 @@ export class PlaybackEngine {
       const f = this.getFrameAt()
       const intF = Math.floor(f)
 
-      const totalF = Math.max(this.getTotalFrames(), this.fps * 10)
+      // Stop/loop at the real end of the last clip, not the padded minimum
+      // used elsewhere to keep the ruler/track lanes from looking cramped on
+      // a short or empty project (that floor is applied independently by the
+      // timeline UI). A `1`-frame floor here just avoids a degenerate `>= 0`
+      // stop on a completely empty timeline.
+      const totalF = Math.max(this.getTotalFrames(), 1)
       if (intF >= totalF) {
         if (this._loop) {
           this.anchorFrame = 0

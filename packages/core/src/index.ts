@@ -148,3 +148,33 @@ export type { ExportOptions, ExportProgress, ExportVideoCodec, ExportAudioCodec 
 
 // --- Debug/trace ---
 export { installTraceGlobal, trace } from './debug/trace'
+
+// --- Frame sequences (ordered image sets: 360° orbits, generated sets, storyboards) ---
+export {
+  createFrameSequence,
+  frameAt,
+  frameCount,
+  normalizeFrameIndex,
+} from './frames/frameSequence'
+export type {
+  Frame,
+  FrameSource,
+  FrameSequence,
+  FrameLoopMode,
+  CreateFrameSequenceOptions,
+} from './frames/frameSequence'
+export { FrameSequenceController } from './frames/FrameSequenceController'
+export type {
+  FrameSequenceSnapshot,
+  FrameSequenceControllerOptions,
+} from './frames/FrameSequenceController'
+export { createFramePreloader } from './frames/framePreloader'
+export type {
+  FramePreloader,
+  FramePreloaderOptions,
+  FramePreloaderStatus,
+} from './frames/framePreloader'
+export { pickFrameSource, supportsImageType } from './frames/frameSource'
+export type { FrameSourceSizeHint } from './frames/frameSource'
+export { frameSequenceToProject } from './frames/frameSequenceProject'
+export type { FrameSequenceToProjectOptions } from './frames/frameSequenceProject'
