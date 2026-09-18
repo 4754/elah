@@ -11,6 +11,7 @@ import {
   probeAudio,
   probeImage,
   probeVideo,
+  releaseMediaElement,
   resolveDuration,
 } from './importFiles'
 
@@ -26,6 +27,9 @@ interface StubMediaElement {
   videoHeight: number
   currentTime: number
   readyState: number
+  pause: ReturnType<typeof vi.fn>
+  removeAttribute: ReturnType<typeof vi.fn>
+  load: ReturnType<typeof vi.fn>
   addEventListener: ReturnType<typeof vi.fn>
   removeEventListener: ReturnType<typeof vi.fn>
   _handlers: Record<string, MediaEventHandler>
@@ -67,6 +71,9 @@ function createStubMediaElement(tag: 'video' | 'audio'): StubMediaElement {
     videoHeight: 1080,
     currentTime: 0,
     readyState: 0,
+    pause: vi.fn(),
+    removeAttribute: vi.fn(),
+    load: vi.fn(),
     addEventListener: vi.fn((event: string, handler: () => void) => {
       handlers[event] = handler
     }),
@@ -719,6 +726,93 @@ describe('media probe helpers', () => {
     })
   })
 
+  describe('releaseMediaElement', () => {
+    it('pauses, removes src, and reloads the element to release hardware decoder', () => {
+      const el = createStubMediaElement('video')
+      el.src = 'blob:video-url'
+
+      releaseMediaElement(el as unknown as HTMLMediaElement)
+
+      expect(el.pause).toHaveBeenCalledTimes(1)
+      expect(el.removeAttribute).toHaveBeenCalledWith('src')
+      expect(el.load).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not throw when pause() or load() throws (best-effort teardown)', () => {
+      const el = createStubMediaElement('video')
+      el.pause.mockImplementation(() => {
+        throw new Error('Pause failed')
+      })
+      el.load.mockImplementation(() => {
+        throw new Error('Load failed')
+      })
+
+      expect(() => releaseMediaElement(el as unknown as HTMLMediaElement)).not.toThrow()
+    })
+
+    it('releases media element after probeVideo completes', async () => {
+      const el = createStubMediaElement('video')
+      vi.stubGlobal('document', { createElement: vi.fn(() => el) })
+
+      const probePromise = probeVideo('blob:video-to-probe')
+      el._emit('loadedmetadata')
+      await probePromise
+
+      expect(el.pause).toHaveBeenCalledTimes(1)
+      expect(el.removeAttribute).toHaveBeenCalledWith('src')
+      expect(el.load).toHaveBeenCalledTimes(1)
+    })
+
+    it('releases media element after probeAudio completes', async () => {
+      const el = createStubMediaElement('audio')
+      vi.stubGlobal('document', { createElement: vi.fn(() => el) })
+
+      const probePromise = probeAudio('blob:audio-to-probe')
+      el._emit('loadedmetadata')
+      await probePromise
+
+      expect(el.pause).toHaveBeenCalledTimes(1)
+      expect(el.removeAttribute).toHaveBeenCalledWith('src')
+      expect(el.load).toHaveBeenCalledTimes(1)
+    })
+
+    it('releases media element when loadMediaElement fails with error event', async () => {
+      const el = createStubMediaElement('video')
+      vi.stubGlobal('document', { createElement: vi.fn(() => el) })
+
+      const probePromise = probeVideo('blob:broken-video')
+      el._emit('error')
+
+      await expect(probePromise).rejects.toThrow('Failed to load video metadata')
+      expect(el.pause).toHaveBeenCalledTimes(1)
+      expect(el.removeAttribute).toHaveBeenCalledWith('src')
+      expect(el.load).toHaveBeenCalledTimes(1)
+    })
+
+    it('releases media element after multiple video imports sequentially', async () => {
+      const elements: StubMediaElement[] = []
+      vi.stubGlobal('document', {
+        createElement: vi.fn(() => {
+          const el = createStubMediaElement('video')
+          elements.push(el)
+          return el
+        }),
+      })
+
+      for (let i = 0; i < 5; i++) {
+        const probePromise = probeVideo(`blob:video-${i}`)
+        elements[i]._emit('loadedmetadata')
+        await probePromise
+
+        expect(elements[i].pause).toHaveBeenCalledTimes(1)
+        expect(elements[i].removeAttribute).toHaveBeenCalledWith('src')
+        expect(elements[i].load).toHaveBeenCalledTimes(1)
+      }
+
+      expect(elements).toHaveLength(5)
+    })
+  })
+
   it('probeImage resolves dimensions from onload', async () => {
     const img = createStubImage()
 
@@ -763,6 +857,34 @@ describe('thumbnail helpers', () => {
     el._emit('seeked')
 
     await expect(thumbPromise).resolves.toBe('data:image/jpeg;base64,thumb')
+    expect(el.pause).toHaveBeenCalledTimes(1)
+    expect(el.removeAttribute).toHaveBeenCalledWith('src')
+    expect(el.load).toHaveBeenCalledTimes(1)
+  })
+
+  it('makeVideoThumbnail releases media element even if seek fails', async () => {
+    const el = createStubMediaElement('video')
+
+    vi.stubGlobal('document', {
+      createElement: vi.fn((tag: string) => {
+        if (tag === 'video') return el
+        return createStubCanvas()
+      }),
+    })
+
+    vi.stubGlobal('HTMLMediaElement', {
+      HAVE_CURRENT_DATA: 2,
+    })
+
+    const thumbPromise = makeVideoThumbnail('blob:test-video', 240)
+    el._emit('loadedmetadata')
+    await Promise.resolve()
+    el._emit('error')
+
+    await expect(thumbPromise).rejects.toThrow('Failed to seek video for thumbnail')
+    expect(el.pause).toHaveBeenCalledTimes(1)
+    expect(el.removeAttribute).toHaveBeenCalledWith('src')
+    expect(el.load).toHaveBeenCalledTimes(1)
   })
 
   it('makeImageThumbnail draws a scaled image on load', async () => {
@@ -781,7 +903,7 @@ describe('thumbnail helpers', () => {
     await expect(thumbPromise).resolves.toBe('data:image/jpeg;base64,thumb')
   })
 
-  it('makeVideoThumbnailStrip decodes one frame per requested sample', async () => {
+  it('makeVideoThumbnailStrip decodes one frame per requested sample and releases element', async () => {
     const el = createStubMediaElement('video')
 
     vi.stubGlobal('document', {
@@ -805,6 +927,31 @@ describe('thumbnail helpers', () => {
       'data:image/jpeg;base64,thumb',
       'data:image/jpeg;base64,thumb',
     ])
+    expect(el.pause).toHaveBeenCalledTimes(1)
+    expect(el.removeAttribute).toHaveBeenCalledWith('src')
+    expect(el.load).toHaveBeenCalledTimes(1)
+  })
+
+  it('makeVideoThumbnailStrip releases media element even if seek fails', async () => {
+    const el = createStubMediaElement('video')
+
+    vi.stubGlobal('document', {
+      createElement: vi.fn((tag: string) => {
+        if (tag === 'video') return el
+        return createStubCanvas()
+      }),
+    })
+    vi.stubGlobal('HTMLMediaElement', { HAVE_CURRENT_DATA: 2 })
+
+    const stripPromise = makeVideoThumbnailStrip('blob:test-video', 3, 160)
+    el._emit('loadedmetadata')
+    await Promise.resolve()
+    el._emit('error')
+
+    await expect(stripPromise).rejects.toThrow('Failed to seek video for thumbnail strip')
+    expect(el.pause).toHaveBeenCalledTimes(1)
+    expect(el.removeAttribute).toHaveBeenCalledWith('src')
+    expect(el.load).toHaveBeenCalledTimes(1)
   })
 })
 

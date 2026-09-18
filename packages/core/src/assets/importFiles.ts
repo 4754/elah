@@ -182,6 +182,7 @@ function loadMediaElement<T extends HTMLMediaElement>(
 
     const onError = () => {
       cleanup()
+      releaseMediaElement(el)
       reject(new Error(`Failed to load ${tag} metadata`))
     }
 
@@ -189,6 +190,22 @@ function loadMediaElement<T extends HTMLMediaElement>(
     el.addEventListener('error', onError)
     el.src = src
   })
+}
+
+/**
+ * Detach a probe/thumbnail media element from its source so the browser frees
+ * its media pipeline immediately. Chromium pins a hardware decoder per element
+ * with a live src; letting these wait for GC starves the WebCodecs playback
+ * pipeline of decoders on import-heavy sessions.
+ */
+export function releaseMediaElement(el: HTMLMediaElement): void {
+  try {
+    el.pause()
+    el.removeAttribute('src')
+    el.load()
+  } catch {
+    // Best-effort teardown.
+  }
 }
 
 /**
@@ -221,18 +238,26 @@ export function resolveDuration(el: HTMLMediaElement): Promise<number> {
 
 export async function probeVideo(src: string): Promise<ProbedMetadata> {
   const el = await loadMediaElement<HTMLVideoElement>('video', src, () => {})
-  return {
-    durationSec: await resolveDuration(el),
-    width: el.videoWidth,
-    height: el.videoHeight,
-    hasAudio: detectHasAudio(el),
+  try {
+    return {
+      durationSec: await resolveDuration(el),
+      width: el.videoWidth,
+      height: el.videoHeight,
+      hasAudio: detectHasAudio(el),
+    }
+  } finally {
+    releaseMediaElement(el)
   }
 }
 
 export async function probeAudio(src: string): Promise<ProbedMetadata> {
   const el = await loadMediaElement<HTMLAudioElement>('audio', src, () => {})
-  return {
-    durationSec: await resolveDuration(el),
+  try {
+    return {
+      durationSec: await resolveDuration(el),
+    }
+  } finally {
+    releaseMediaElement(el)
   }
 }
 
@@ -318,7 +343,7 @@ export async function makeVideoThumbnail(
     video.currentTime = 0
   })
 
-  return new Promise((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     const cleanup = () => {
       el.removeEventListener('seeked', onSeeked)
       el.removeEventListener('error', onError)
@@ -345,7 +370,7 @@ export async function makeVideoThumbnail(
 
     el.addEventListener('seeked', onSeeked)
     el.addEventListener('error', onError)
-  })
+  }).finally(() => releaseMediaElement(el))
 }
 
 /**
@@ -386,13 +411,17 @@ export async function makeVideoThumbnailStrip(
       el.currentTime = time
     })
 
-  const frames: string[] = []
-  for (let i = 0; i < count; i++) {
-    // Sample the middle of each segment so the first tile isn't a black frame.
-    const time = duration > 0 ? ((i + 0.5) / count) * duration : 0
-    frames.push(await seekTo(time))
+  try {
+    const frames: string[] = []
+    for (let i = 0; i < count; i++) {
+      // Sample the middle of each segment so the first tile isn't a black frame.
+      const time = duration > 0 ? ((i + 0.5) / count) * duration : 0
+      frames.push(await seekTo(time))
+    }
+    return frames
+  } finally {
+    releaseMediaElement(el)
   }
-  return frames
 }
 
 export async function makeImageThumbnail(src: string, maxDim: number): Promise<string> {
