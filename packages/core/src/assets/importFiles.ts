@@ -191,10 +191,38 @@ function loadMediaElement<T extends HTMLMediaElement>(
   })
 }
 
+/**
+ * Resolve a finite duration from a loaded media element.
+ *
+ * Chromium can report `el.duration === Infinity` at `loadedmetadata` for
+ * media without a container-level duration atom (e.g. freshly-generated /
+ * proxied audio) until a seek past the end forces it to compute the real
+ * value. Falls back to `0` (this file's existing "unknown duration"
+ * convention, see `makeVideoThumbnailStrip`) if even that doesn't resolve.
+ */
+export function resolveDuration(el: HTMLMediaElement): Promise<number> {
+  if (Number.isFinite(el.duration)) return Promise.resolve(el.duration)
+
+  return new Promise((resolve) => {
+    const finish = (value: number) => {
+      el.removeEventListener('durationchange', onChange)
+      clearTimeout(timer)
+      el.currentTime = 0
+      resolve(value)
+    }
+    const onChange = () => {
+      if (Number.isFinite(el.duration)) finish(el.duration)
+    }
+    el.addEventListener('durationchange', onChange)
+    el.currentTime = 1e101
+    const timer = setTimeout(() => finish(Number.isFinite(el.duration) ? el.duration : 0), 2000)
+  })
+}
+
 export async function probeVideo(src: string): Promise<ProbedMetadata> {
   const el = await loadMediaElement<HTMLVideoElement>('video', src, () => {})
   return {
-    durationSec: el.duration,
+    durationSec: await resolveDuration(el),
     width: el.videoWidth,
     height: el.videoHeight,
     hasAudio: detectHasAudio(el),
@@ -204,7 +232,7 @@ export async function probeVideo(src: string): Promise<ProbedMetadata> {
 export async function probeAudio(src: string): Promise<ProbedMetadata> {
   const el = await loadMediaElement<HTMLAudioElement>('audio', src, () => {})
   return {
-    durationSec: el.duration,
+    durationSec: await resolveDuration(el),
   }
 }
 

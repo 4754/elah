@@ -11,6 +11,7 @@ import {
   probeAudio,
   probeImage,
   probeVideo,
+  resolveDuration,
 } from './importFiles'
 
 type MediaEventHandler = (() => void) | null
@@ -605,6 +606,116 @@ describe('media probe helpers', () => {
 
     await expect(probePromise).resolves.toEqual({
       durationSec: 12.5,
+    })
+  })
+
+  describe('resolveDuration', () => {
+    it('resolves immediately when duration is finite', async () => {
+      const el = createStubMediaElement('audio')
+      el.duration = 18.4
+
+      const duration = await resolveDuration(el as unknown as HTMLMediaElement)
+      expect(duration).toBe(18.4)
+    })
+
+    it('seeks to 1e101 and waits for durationchange when duration is Infinity (Chromium fallback)', async () => {
+      const el = createStubMediaElement('audio')
+      el.duration = Infinity
+
+      const promise = resolveDuration(el as unknown as HTMLMediaElement)
+
+      // Workaround should seek past end to trigger Chromium container calculation
+      expect(el.currentTime).toBe(1e101)
+      expect(el.addEventListener).toHaveBeenCalledWith('durationchange', expect.any(Function))
+
+      // Simulate Chromium firing durationchange after computing stream duration
+      el.duration = 45.2
+      el._emit('durationchange')
+
+      const resolved = await promise
+      expect(resolved).toBe(45.2)
+      expect(el.currentTime).toBe(0) // Resets back to 0
+    })
+
+    it('falls back to 0 if duration remains Infinity after timeout', async () => {
+      vi.useFakeTimers()
+      try {
+        const el = createStubMediaElement('audio')
+        el.duration = Infinity
+
+        const promise = resolveDuration(el as unknown as HTMLMediaElement)
+        expect(el.currentTime).toBe(1e101)
+
+        // Advance past the 2s timeout
+        vi.advanceTimersByTime(2000)
+
+        const resolved = await promise
+        expect(resolved).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('falls back to 0 if duration is NaN', async () => {
+      vi.useFakeTimers()
+      try {
+        const el = createStubMediaElement('audio')
+        el.duration = NaN
+
+        const promise = resolveDuration(el as unknown as HTMLMediaElement)
+
+        vi.advanceTimersByTime(2000)
+
+        const resolved = await promise
+        expect(resolved).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('probeAudio resolves finite duration when el.duration is Infinity', async () => {
+      const el = createStubMediaElement('audio')
+      el.duration = Infinity
+
+      vi.stubGlobal('document', {
+        createElement: vi.fn(() => el),
+      })
+
+      const probePromise = probeAudio('blob:test-streamed-audio')
+      el._emit('loadedmetadata')
+      await Promise.resolve()
+
+      expect(el.currentTime).toBe(1e101)
+      el.duration = 60.5
+      el._emit('durationchange')
+
+      await expect(probePromise).resolves.toEqual({
+        durationSec: 60.5,
+      })
+    })
+
+    it('probeVideo resolves finite duration when el.duration is Infinity', async () => {
+      const el = createStubMediaElement('video')
+      el.duration = Infinity
+
+      vi.stubGlobal('document', {
+        createElement: vi.fn(() => el),
+      })
+
+      const probePromise = probeVideo('blob:test-webm-stream')
+      el._emit('loadedmetadata')
+      await Promise.resolve()
+
+      expect(el.currentTime).toBe(1e101)
+      el.duration = 120.0
+      el._emit('durationchange')
+
+      await expect(probePromise).resolves.toEqual({
+        durationSec: 120.0,
+        width: 1920,
+        height: 1080,
+        hasAudio: false,
+      })
     })
   })
 
