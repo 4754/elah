@@ -59,6 +59,9 @@ export { createDefaultDemuxerFactory, createMediabunnyBackend, isMediabunnyCompa
 export type { MediabunnyModule, CreateMediabunnyBackendOpts } from '@elah/core'
 export type { DemuxerBackend, DemuxerFactory, MediabunnyDemuxer } from '@elah/core'
 
+export { sourceBlobCache, createSourceBlobCache, warmVideoSrc } from '@elah/core'
+export type { SourceBlobCache, CreateSourceBlobCacheOpts, BlobFetcher } from '@elah/core'
+
 export type { VideoFrameProvider, VideoFrameProviderDeps } from '@elah/core'
 export { createVideoFrameProvider, MockVideoFrameProvider, SyntheticVideoFrameProvider } from '@elah/core'
 

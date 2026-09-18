@@ -44,6 +44,7 @@
  */
 
 import type { DemuxerBackend } from './MediabunnyDemuxer'
+import { sourceBlobCache } from './sourceBlobCache'
 
 /**
  * Toggle in DevTools: `window.__DEMUX_DEBUG__ = true` to trace which branch
@@ -82,7 +83,12 @@ interface MbVideoTrack {
 
 interface MbInput {
   getPrimaryVideoTrack(): Promise<MbVideoTrack | null>
-  /** Present on mediabunny's Input but name may vary; dispose resources. */
+  /**
+   * Frees the Input's connected resources (cancels reads, closes decoders).
+   * Declared on mediabunny v1.x Input; optional here so older module shapes
+   * still satisfy the structural type.
+   */
+  dispose?(): void
   [key: string]: unknown
 }
 
@@ -109,7 +115,10 @@ export interface MediabunnyModule {
 export interface CreateMediabunnyBackendOpts {
   /**
    * Resolve a clip's src (object URL, blob:, or http: URL) to a Blob.
-   * Defaults to fetch(src).then(r => r.blob()).
+   *
+   * Defaults to `sourceBlobCache.resolve`, which is a deduped fetch: two clips
+   * on the same source, and the has-audio probe that ran at import time, share
+   * one download instead of repeating it.
    *
    * Override this in the playground to return the original File directly,
    * avoiding a fetch round-trip for freshly-imported local files.
@@ -154,9 +163,10 @@ export function createMediabunnyBackend(
 ): DemuxerBackend {
   _assertMediabunnyApi(mb)
 
-  const resolve = opts.blobResolver ?? defaultBlobResolver
+  const resolve = opts.blobResolver ?? sourceBlobCache.resolve
 
   // State populated by open()
+  let _input: MbInput | null = null
   let _sink: MbEncodedPacketSink | null = null
   let _config: VideoDecoderConfig | null = null
   // Cached packet from seekToKeyframe so the next packets() call starts there.
@@ -177,6 +187,9 @@ export function createMediabunnyBackend(
         formats: mb.ALL_FORMATS,
         source: new mb.BlobSource(blob),
       })
+      // Retained so dispose() can free the Input (and with it the whole-file
+      // Blob the BlobSource pins) instead of waiting for GC.
+      _input = input
 
       const track = await input.getPrimaryVideoTrack()
       if (!track) {
@@ -313,9 +326,15 @@ export function createMediabunnyBackend(
       _seekPacket = null
       _nextPacket = null
       _lastEndSec = null
-      // mediabunny Input does not expose a public dispose/close method; the
-      // BlobSource + Input are garbage-collected naturally. If a future
-      // mediabunny version adds input.dispose(), call it here.
+      // mediabunny v1.x Input.dispose() cancels in-flight reads and frees the
+      // source's resources, releasing the whole-file Blob promptly instead of
+      // leaving it to GC (which under decode pressure can lag far behind).
+      try {
+        _input?.dispose?.()
+      } catch {
+        // Best-effort — a failed dispose must not break teardown.
+      }
+      _input = null
     },
   }
 }
@@ -323,14 +342,6 @@ export function createMediabunnyBackend(
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
-
-const defaultBlobResolver: (src: string) => Promise<Blob> = (src) =>
-  fetch(src).then((r) => {
-    if (!r.ok) {
-      throw new Error(`createMediabunnyBackend: failed to fetch "${src}" (${r.status} ${r.statusText})`)
-    }
-    return r.blob()
-  })
 
 function _assertOpen(
   sink: MbEncodedPacketSink | null,

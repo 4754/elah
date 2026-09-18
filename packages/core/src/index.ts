@@ -81,6 +81,19 @@ export type { AudioPlaybackControllerOptions } from './media/audio/AudioPlayback
 export { defaultAudioResolver } from './media/audio/audioResolver'
 export type { AudioResolver } from './media/audio/audioResolver'
 
+// --- Source Blob cache (video download deduping) ---
+export {
+  sourceBlobCache,
+  createSourceBlobCache,
+  defaultBlobFetcher,
+  warmVideoSrc,
+} from './media/video/demuxer/sourceBlobCache'
+export type {
+  SourceBlobCache,
+  CreateSourceBlobCacheOpts,
+  BlobFetcher,
+} from './media/video/demuxer/sourceBlobCache'
+
 // --- Image decode cache (warming) ---
 export { warmImageSrc, preloadProjectImages } from './renderer/gpu/layers/imageCache'
 export type { ImageLoader, LoadedImage } from './renderer/gpu/layers/imageCache'
@@ -93,6 +106,9 @@ export {
   importFiles,
   importUrl,
   importBlob,
+  determineAssetHasAudio,
+  hasAudioDetermined,
+  probeHasAudio,
 } from './assets'
 export type {
   MediaAsset,

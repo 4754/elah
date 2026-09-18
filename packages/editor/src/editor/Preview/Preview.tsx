@@ -9,7 +9,7 @@ import { GpuRenderer } from '@elah/core'
 import { resolveTimeline } from '@elah/core'
 import { useTimelineEngine, usePlaybackEngine, useMediaLibraryStore } from '@elah/react'
 import type { DemuxerFactory } from '@elah/core'
-import { AudioPlaybackController, preloadProjectImages, warmImageSrc } from '@elah/core'
+import { AudioPlaybackController, preloadProjectImages, warmImageSrc, warmVideoSrc } from '@elah/core'
 import type { AudioResolver } from '@elah/core'
 import { cn } from '@elah/timeline'
 import { TextOverlay } from './TextOverlay'
@@ -159,6 +159,10 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
         const asset = state.assets[id]
         if (asset?.kind === 'audio') audio?.warmAudioSrc(asset.src)
         else if (asset?.kind === 'image') warmImageSrc(asset.src)
+        // Video's cold start is the whole-file download the demuxer needs
+        // before it can read a single frame — seconds for a gallery clip. Start
+        // it at registration so a drop minutes later opens on cached bytes.
+        else if (asset?.kind === 'video') warmVideoSrc(asset.src)
       }
     })
 
