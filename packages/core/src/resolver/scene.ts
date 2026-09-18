@@ -43,6 +43,10 @@ export interface ActiveVideoClip extends ActiveClipBase {
   src: string
   /** Effective volume after track mute is applied. 0–1. */
   volume: number
+  /** Rounded-corner mask, 0..0.5 fraction of the shorter rendered side. */
+  cornerRadius?: number
+  /** Source-space crop window, normalized 0..1, origin top-left. Undefined = full frame. */
+  crop?: { x: number; y: number; width: number; height: number }
 }
 
 export interface ActiveAudioClip extends ActiveClipBase {
@@ -68,6 +72,10 @@ export interface ActiveTextClip extends ActiveClipBase {
 export interface ActiveImageClip extends ActiveClipBase {
   type: 'image'
   src: string
+  /** Rounded-corner mask, 0..0.5 fraction of the shorter rendered side. */
+  cornerRadius?: number
+  /** Source-space crop window, normalized 0..1, origin top-left. Undefined = full frame. */
+  crop?: { x: number; y: number; width: number; height: number }
 }
 
 export interface ActiveShapeClip extends ActiveClipBase {

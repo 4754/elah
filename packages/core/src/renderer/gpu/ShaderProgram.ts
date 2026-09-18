@@ -76,6 +76,11 @@ export class ShaderProgram {
     if (loc !== null) gl.uniform2f(loc, x, y)
   }
 
+  setUniform4f(gl: WebGL2RenderingContext, name: string, x: number, y: number, z: number, w: number): void {
+    const loc = this.getUniformLocation(gl, name)
+    if (loc !== null) gl.uniform4f(loc, x, y, z, w)
+  }
+
   /**
    * Upload a column-major 3×3 matrix uniform.
    * @param transpose Must be false for WebGL (GLSL column-major convention).

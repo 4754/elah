@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { Transform } from '../../../types'
 import { computeContainRect } from '../layers/objectFit'
-import { resolveDrawRect, resolveTransformRect, transformFromContainRect } from '../layers/drawRect'
+import {
+  resolveDrawRect,
+  resolveTransformRect,
+  transformFromContainRect,
+  normalizeCrop,
+  croppedContentSize,
+  FULL_CROP,
+  type CropRect,
+} from '../layers/drawRect'
 
 describe('computeContainRect', () => {
   it('pillarboxes a portrait clip inside a landscape stage (bars left/right)', () => {
@@ -110,5 +118,117 @@ describe('transformFromContainRect', () => {
     expect(t.x).toBeCloseTo(0.5)
     expect(t.y).toBeCloseTo(0.5)
     expect(t.scale).toBe(1)
+  })
+})
+
+describe('normalizeCrop', () => {
+  it('resolves undefined to the full frame', () => {
+    expect(normalizeCrop(undefined)).toEqual(FULL_CROP)
+  })
+
+  it('passes an already-valid crop through unchanged', () => {
+    const crop: CropRect = { x: 0.1, y: 0.2, width: 0.5, height: 0.4 }
+    expect(normalizeCrop(crop)).toEqual(crop)
+  })
+
+  it('clamps a crop that overflows the unit square', () => {
+    const crop = normalizeCrop({ x: 0.8, y: 0.9, width: 0.5, height: 0.5 })
+    // width/height are preserved; x/y are pulled back so x+width <= 1.
+    expect(crop.width).toBeCloseTo(0.5)
+    expect(crop.height).toBeCloseTo(0.5)
+    expect(crop.x).toBeCloseTo(0.5)
+    expect(crop.y).toBeCloseTo(0.5)
+  })
+
+  it('never collapses to a zero-size window', () => {
+    const crop = normalizeCrop({ x: 0.5, y: 0.5, width: 0, height: 0 })
+    expect(crop.width).toBeGreaterThan(0)
+    expect(crop.height).toBeGreaterThan(0)
+  })
+
+  it('clamps negative origin and over-100% size', () => {
+    const crop = normalizeCrop({ x: -0.5, y: -0.5, width: 2, height: 2 })
+    expect(crop).toEqual({ x: 0, y: 0, width: 1, height: 1 })
+  })
+})
+
+describe('croppedContentSize', () => {
+  it('returns the full content size when crop is undefined', () => {
+    expect(croppedContentSize(1000, 500)).toEqual({ width: 1000, height: 500 })
+  })
+
+  it('scales content size down by the crop fraction', () => {
+    expect(croppedContentSize(1000, 500, { x: 0, y: 0, width: 0.5, height: 0.4 })).toEqual({
+      width: 500,
+      height: 200,
+    })
+  })
+})
+
+describe('resolveDrawRect / resolveTransformRect — with crop', () => {
+  it('a half-width crop halves the rect width but leaves the transform-driven centre untouched', () => {
+    const transform: Transform = {
+      x: 0.5,
+      y: 0.5,
+      scale: 1,
+      rotation: 0,
+      anchor: { x: 0.5, y: 0.5 },
+    }
+    const full = resolveDrawRect(transform, 1280, 720, 640, 360)
+    const cropped = resolveDrawRect(transform, 1280, 720, 640, 360, {
+      x: 0,
+      y: 0,
+      width: 0.5,
+      height: 1,
+    })
+    expect(cropped.width).toBeCloseTo(full.width / 2)
+    expect(cropped.height).toBeCloseTo(full.height)
+    // Anchor (0.5, 0.5) is relative to the (now smaller) box, so the box centre
+    // stays pinned to the same stage point regardless of crop.
+    expect(cropped.x + cropped.width / 2).toBeCloseTo(full.x + full.width / 2)
+    expect(cropped.y + cropped.height / 2).toBeCloseTo(full.y + full.height / 2)
+  })
+
+  it('an undefined crop is byte-identical to omitting the parameter entirely', () => {
+    const transform: Transform = {
+      x: 0.3,
+      y: 0.7,
+      scale: 1.5,
+      rotation: 0.2,
+      anchor: { x: 0.5, y: 0.5 },
+    }
+    const withoutParam = resolveDrawRect(transform, 1280, 720, 640, 360)
+    const withUndefined = resolveDrawRect(transform, 1280, 720, 640, 360, undefined)
+    expect(withUndefined).toEqual(withoutParam)
+  })
+
+  it('crops the contain-fallback (no-transform) content size too', () => {
+    const full = resolveDrawRect(undefined, 1280, 720, 640, 360)
+    const cropped = resolveDrawRect(undefined, 1280, 720, 640, 360, {
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 0.5,
+    })
+    // Half the source height, same aspect logic — contain-fit recomputes from
+    // the effective (cropped) content size, so this is not simply full/2.
+    expect(cropped.height).toBeLessThan(full.height)
+  })
+
+  it('resolveTransformRect: cropped content size feeds scale/scaleX/scaleY identically to a smaller full clip', () => {
+    const transform: Transform = {
+      x: 0.5,
+      y: 0.5,
+      scale: 2,
+      rotation: 0,
+      anchor: { x: 0.5, y: 0.5 },
+      scaleX: 1.2,
+      scaleY: 0.8,
+    }
+    const crop: CropRect = { x: 0.1, y: 0.1, width: 0.6, height: 0.3 }
+    const cropped = resolveTransformRect(transform, 1280, 720, 1000, 500, crop)
+    const equivalent = resolveTransformRect(transform, 1280, 720, 600, 150)
+    expect(cropped.width).toBeCloseTo(equivalent.width)
+    expect(cropped.height).toBeCloseTo(equivalent.height)
   })
 })

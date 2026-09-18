@@ -24,7 +24,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { resolveDrawRect, buildTransformMatrixFromRect } from '../layers/drawRect'
+import { resolveDrawRect, buildTransformMatrixFromRect, type CropRect } from '../layers/drawRect'
 import type { Transform } from '../../../types'
 
 const STAGE_W = 1920
@@ -64,8 +64,13 @@ function pixelToNdc(px: number, py: number): { x: number; y: number } {
  *
  * This verifies that both paths rotate about the same stage pixel.
  */
-function assertCentresParity(transform: Transform | undefined, contentW: number, contentH: number) {
-  const rect = resolveDrawRect(transform, STAGE_W, STAGE_H, contentW, contentH)
+function assertCentresParity(
+  transform: Transform | undefined,
+  contentW: number,
+  contentH: number,
+  crop?: CropRect,
+) {
+  const rect = resolveDrawRect(transform, STAGE_W, STAGE_H, contentW, contentH, crop)
   const matrix = buildTransformMatrixFromRect(rect, STAGE_W, STAGE_H)
 
   // UV centre of the quad (the point both paths rotate around)
@@ -179,31 +184,129 @@ describe('GeometryParity — GPU matrix centre == 2D canvas centre', () => {
     const t: Transform = { x: 0.9, y: 0.9, scale: 0.3, rotation: 0, anchor: { x: 0.5, y: 0.5 } }
     assertCentresParity(t, 400, 300)
   })
+
+  it('cropped clip — GPU and 2D canvas still rotate about the same pixel centre', () => {
+    const t: Transform = {
+      x: 0.4, y: 0.6, scale: 0.7, rotation: Math.PI / 5, anchor: { x: 0.5, y: 0.5 },
+    }
+    const crop: CropRect = { x: 0.1, y: 0.2, width: 0.5, height: 0.4 }
+    assertCentresParity(t, 1920, 1080, crop)
+  })
+
+  it('cropped clip with no explicit transform (contain fallback)', () => {
+    const crop: CropRect = { x: 0, y: 0, width: 0.5, height: 0.5 }
+    assertCentresParity(undefined, 1024, 768, crop)
+  })
 })
 
+// ---------------------------------------------------------------------------
+// Corner parity — the invariant the centre check above cannot see
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the 2D canvas puts a quad corner, in stage pixels.
+ *
+ * `ExportWorker.drawMedia` does `translate(cx, cy); rotate(θ); drawImage(-w/2,
+ * -h/2, w, h)` — i.e. it rotates the rect's own half-extents in PIXEL space and
+ * offsets from the centre. That is the reference every other path has to match:
+ * the preview overlay's CSS `rotate()` is the same rotation, and the exported
+ * file is the artifact the user actually keeps.
+ */
+function canvasCorner(rect: ReturnType<typeof resolveDrawRect>, u: number, v: number) {
+  const c = Math.cos(rect.rotation)
+  const s = Math.sin(rect.rotation)
+  const lx = (u - 0.5) * rect.width
+  const ly = (v - 0.5) * rect.height
+  return {
+    x: rect.x + rect.width / 2 + (lx * c - ly * s),
+    y: rect.y + rect.height / 2 + (lx * s + ly * c),
+  }
+}
+
+/** Every corner of the quad, GPU matrix vs 2D canvas, in stage pixels. */
+function assertCornersParity(
+  transform: Transform | undefined,
+  contentW: number,
+  contentH: number,
+  stageW = STAGE_W,
+  stageH = STAGE_H,
+) {
+  const rect = resolveDrawRect(transform, stageW, stageH, contentW, contentH)
+  const matrix = buildTransformMatrixFromRect(rect, stageW, stageH)
+
+  for (const [u, v] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) {
+    const ndc = applyMatrix(matrix, u, v)
+    // Undo the NDC mapping to compare in the pixel space both paths think in.
+    const gpu = { x: ((ndc.x + 1) / 2) * stageW, y: ((ndc.y + 1) / 2) * stageH }
+    const canvas = canvasCorner(rect, u, v)
+    expect(gpu.x).toBeCloseTo(canvas.x, 4)
+    expect(gpu.y).toBeCloseTo(canvas.y, 4)
+  }
+}
+
 describe('GeometryParity — rotation is identical in both paths', () => {
-  it('both paths use rect.rotation (radians) about the same pixel centre', () => {
-    const rotation = Math.PI / 6 // 30 degrees
+  it('unrotated clip lands on the same four corners', () => {
+    const t: Transform = { x: 0.5, y: 0.5, scale: 0.5, rotation: 0, anchor: { x: 0.5, y: 0.5 } }
+    assertCornersParity(t, 800, 450)
+  })
+
+  it('30° rotation lands on the same four corners', () => {
     const t: Transform = {
-      x: 0.5, y: 0.5, scale: 0.5, rotation,
-      anchor: { x: 0.5, y: 0.5 },
+      x: 0.5, y: 0.5, scale: 0.5, rotation: Math.PI / 6, anchor: { x: 0.5, y: 0.5 },
     }
-    const rect = resolveDrawRect(t, STAGE_W, STAGE_H, 800, 450)
+    assertCornersParity(t, 800, 450)
+  })
 
-    // Both paths rotate by rect.rotation — verify it matches the input.
-    expect(rect.rotation).toBe(rotation)
+  it('off-centre + cropped-aspect rotation still agrees corner for corner', () => {
+    const t: Transform = {
+      x: 0.3, y: 0.7, scale: 0.4, rotation: -Math.PI / 3, anchor: { x: 0.5, y: 0.5 },
+    }
+    assertCornersParity(t, 1024, 768)
+  })
 
-    // The GPU matrix encodes rotation via cos/sin in columns 0 and 1.
-    // buildTransformMatrixFromRect uses sc=cos(rotation), ss=sin(rotation).
-    // Verify the matrix diagonal encodes the correct cos value.
+  /**
+   * The regression this file exists for. Rotating in normalized stage space
+   * scales a rotated clip by the stage aspect, which is invisible on a square
+   * stage and invisible at the centre point — so it has to be asserted on a
+   * NON-square stage, at the corners.
+   */
+  it('90° turn on a 9:16 stage keeps the clip the same size (no aspect stretch)', () => {
+    const PORTRAIT_W = 1080
+    const PORTRAIT_H = 1920
+    const t: Transform = {
+      x: 0.5, y: 0.5, scale: 1, rotation: Math.PI / 2, anchor: { x: 0.5, y: 0.5 },
+    }
+    // A square clip: after a quarter turn it must still be square, and the same
+    // size. Under the normalized-space rotation it came out 1920/1080 wide and
+    // 1080/1920 tall instead.
+    const rect = resolveDrawRect(t, PORTRAIT_W, PORTRAIT_H, 600, 600)
+    const matrix = buildTransformMatrixFromRect(rect, PORTRAIT_W, PORTRAIT_H)
+
+    const toPx = (u: number, v: number) => {
+      const ndc = applyMatrix(matrix, u, v)
+      return { x: ((ndc.x + 1) / 2) * PORTRAIT_W, y: ((ndc.y + 1) / 2) * PORTRAIT_H }
+    }
+    const tl = toPx(0, 0)
+    const tr = toPx(1, 0)
+    const bl = toPx(0, 1)
+
+    const widthEdge = Math.hypot(tr.x - tl.x, tr.y - tl.y)
+    const heightEdge = Math.hypot(bl.x - tl.x, bl.y - tl.y)
+    expect(widthEdge).toBeCloseTo(600, 4)
+    expect(heightEdge).toBeCloseTo(600, 4)
+
+    assertCornersParity(t, 600, 600, PORTRAIT_W, PORTRAIT_H)
+  })
+
+  it('a quarter turn maps the width edge onto the vertical axis (clockwise)', () => {
+    // Positive rotation is clockwise on screen (stage Y is top-down here;
+    // quad.vert negates Y on the way to GL's Y-up NDC).
+    const rect = { x: 0, y: 0, width: 400, height: 200, rotation: Math.PI / 2 }
     const matrix = buildTransformMatrixFromRect(rect, STAGE_W, STAGE_H)
-    const ws = rect.width / STAGE_W
-    const hs = rect.height / STAGE_H
-    const sc = Math.cos(rotation)
-    const ss = Math.sin(rotation)
-    expect(matrix[0]).toBeCloseTo(2 * sc * ws, 7)  // top-left of matrix
-    expect(matrix[4]).toBeCloseTo(2 * sc * hs, 7)  // centre of matrix
-    expect(matrix[1]).toBeCloseTo(2 * ss * ws, 7)  // rotation term
-    expect(matrix[3]).toBeCloseTo(-2 * ss * hs, 7) // rotation term
+    const tl = applyMatrix(matrix, 0, 0)
+    const tr = applyMatrix(matrix, 1, 0)
+    // The width edge now runs straight down the screen, 400px long.
+    expect(((tr.x - tl.x) / 2) * STAGE_W).toBeCloseTo(0, 4)
+    expect(((tr.y - tl.y) / 2) * STAGE_H).toBeCloseTo(400, 4)
   })
 })

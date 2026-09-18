@@ -91,7 +91,7 @@ import type {
   ActiveShapeClip,
   ActiveFreehandClip,
 } from '../resolver/scene'
-import { resolveDrawRect } from '../renderer/gpu/layers/drawRect'
+import { resolveDrawRect, normalizeCrop, type CropRect } from '../renderer/gpu/layers/drawRect'
 import { computeTextLayout } from '../renderer/gpu/layers/textLayout'
 import type { ExportOptions, RenderedAudio, WorkerOutMessage } from './types'
 
@@ -482,7 +482,7 @@ async function renderFrame(
         })
       }
       if (wrapped) {
-        drawMedia(ctx, wrapped.canvas, entry.item.transform, stageW, stageH)
+        drawMedia(ctx, wrapped.canvas, entry.item.transform, stageW, stageH, entry.item.cornerRadius, entry.item.crop)
       } else {
         if (isDebugFrame) xlog('render:frame0', `video layer — WARNING: no canvas for clip "${entry.item.id}"`)
       }
@@ -497,7 +497,7 @@ async function renderFrame(
         })
       }
       if (bitmap) {
-        drawMedia(ctx, bitmap, entry.item.transform, stageW, stageH)
+        drawMedia(ctx, bitmap, entry.item.transform, stageW, stageH, entry.item.cornerRadius, entry.item.crop)
       }
     } else if (entry.kind === 'text') {
       if (isDebugFrame) {
@@ -568,14 +568,47 @@ function drawMedia(
   transform: ReturnType<typeof resolveTimeline>['videos'][0]['transform'],
   stageW: number,
   stageH: number,
+  cornerRadius?: number,
+  crop?: CropRect,
 ): void {
-  const rect = resolveDrawRect(transform, stageW, stageH, source.width, source.height)
+  const rect = resolveDrawRect(transform, stageW, stageH, source.width, source.height, crop)
   const cx = rect.x + rect.width / 2
   const cy = rect.y + rect.height / 2
 
   ctx.translate(cx, cy)
   ctx.rotate(rect.rotation)
-  ctx.drawImage(source, -rect.width / 2, -rect.height / 2, rect.width, rect.height)
+
+  // Mirror the GPU shader's uRadius mask: cornerRadius is a fraction (0..0.5)
+  // of each axis's own extent, so a per-corner elliptical radius at the max
+  // (0.5) rounds all the way to an ellipse inscribed in the rect — same as
+  // QUAD_FRAG_SRC's rounded-box SDF.
+  if (cornerRadius && cornerRadius > 0) {
+    const rx = Math.min(cornerRadius, 0.5) * rect.width
+    const ry = Math.min(cornerRadius, 0.5) * rect.height
+    ctx.beginPath()
+    ctx.roundRect(-rect.width / 2, -rect.height / 2, rect.width, rect.height, [{ x: rx, y: ry }])
+    ctx.clip()
+  }
+
+  // Mirror the GPU shader's uCrop: sample only the cropped source sub-rect
+  // (9-arg drawImage) instead of the full source (5-arg) — same normalized
+  // 0..1 top-left-origin crop window as resolveDrawRect used to size `rect`.
+  if (crop) {
+    const c = normalizeCrop(crop)
+    ctx.drawImage(
+      source,
+      c.x * source.width,
+      c.y * source.height,
+      c.width * source.width,
+      c.height * source.height,
+      -rect.width / 2,
+      -rect.height / 2,
+      rect.width,
+      rect.height,
+    )
+  } else {
+    ctx.drawImage(source, -rect.width / 2, -rect.height / 2, rect.width, rect.height)
+  }
 }
 
 function drawText(
@@ -613,7 +646,9 @@ function drawShape(
   const cx = (item.transform?.x ?? 0.5) * stageW
   const cy = (item.transform?.y ?? 0.5) * stageH
   const shortSide = Math.min(stageW, stageH)
-  const half = (item.transform?.scale ?? 0.5) * shortSide * 0.5
+  const baseHalf = (item.transform?.scale ?? 0.5) * shortSide * 0.5
+  const halfW = baseHalf * (item.transform?.scaleX ?? 1)
+  const halfH = baseHalf * (item.transform?.scaleY ?? 1)
 
   ctx.fillStyle = item.shapeFill
   ctx.strokeStyle = item.shapeStroke
@@ -621,19 +656,19 @@ function drawShape(
 
   if (item.shapeKind === 'rect') {
     ctx.beginPath()
-    ctx.rect(cx - half, cy - half, half * 2, half * 2)
+    ctx.rect(cx - halfW, cy - halfH, halfW * 2, halfH * 2)
     ctx.fill()
     if (item.shapeStrokeWidth > 0) ctx.stroke()
   } else if (item.shapeKind === 'circle') {
     ctx.beginPath()
-    ctx.arc(cx, cy, half, 0, Math.PI * 2)
+    ctx.ellipse(cx, cy, halfW, halfH, 0, 0, Math.PI * 2)
     ctx.fill()
     if (item.shapeStrokeWidth > 0) ctx.stroke()
   } else if (item.shapeKind === 'triangle') {
     ctx.beginPath()
-    ctx.moveTo(cx, cy - half)
-    ctx.lineTo(cx + half, cy + half)
-    ctx.lineTo(cx - half, cy + half)
+    ctx.moveTo(cx, cy - halfH)
+    ctx.lineTo(cx + halfW, cy + halfH)
+    ctx.lineTo(cx - halfW, cy + halfH)
     ctx.closePath()
     ctx.fill()
     if (item.shapeStrokeWidth > 0) ctx.stroke()

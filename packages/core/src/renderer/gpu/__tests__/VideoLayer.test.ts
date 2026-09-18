@@ -75,6 +75,8 @@ function createMockGL(): WebGL2RenderingContext {
     getUniformLocation: vi.fn(() => ({})),
     uniform1i: vi.fn(),
     uniform1f: vi.fn(),
+    uniform2f: vi.fn(),
+    uniform4f: vi.fn(),
     uniformMatrix3fv: vi.fn(),
     activeTexture: vi.fn(),
     drawArrays: vi.fn(),
@@ -237,6 +239,26 @@ describe('VideoLayer', () => {
     layer.draw(clip, ctx)
 
     expect(gl.uniform1f).toHaveBeenCalledWith(expect.anything(), 0.45)
+  })
+
+  it('always sets uCrop, zeroed when the clip has no crop', () => {
+    const clip = makeClip()
+    layer.acquire(clip, ctx)
+
+    provider.getCurrent.mockReturnValue(mockFrame())
+    layer.draw(clip, ctx)
+
+    expect(gl.uniform4f).toHaveBeenCalledWith(expect.anything(), 0, 0, 0, 0)
+  })
+
+  it('forwards the clip crop rect as uCrop', () => {
+    const clip = makeClip({ crop: { x: 0.1, y: 0.2, width: 0.5, height: 0.4 } })
+    layer.acquire(clip, ctx)
+
+    provider.getCurrent.mockReturnValue(mockFrame())
+    layer.draw(clip, ctx)
+
+    expect(gl.uniform4f).toHaveBeenCalledWith(expect.anything(), 0.1, 0.2, 0.5, 0.4)
   })
 
   it('forwards transform uniforms correctly', () => {

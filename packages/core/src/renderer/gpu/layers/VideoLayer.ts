@@ -21,7 +21,7 @@ import {
   type VideoFrameProvider,
   type VideoFrameProviderDeps,
 } from '../../../media/video'
-import { buildDrawTransformMatrix, type DrawRect } from './drawRect'
+import { buildDrawTransformMatrix, type CropRect, type DrawRect } from './drawRect'
 import type { Layer, LayerContext } from './types'
 
 // Placement math now lives in ./drawRect (shared with ImageLayer). Re-exported
@@ -32,7 +32,7 @@ export {
   resolveDrawRect,
   buildDrawTransformMatrix,
 } from './drawRect'
-export type { DrawRect } from './drawRect'
+export type { DrawRect, CropRect } from './drawRect'
 /** @deprecated use DrawRect from ./drawRect */
 export type VideoDrawRect = DrawRect
 
@@ -54,6 +54,7 @@ export function buildVideoTransformMatrix(
   stageHeight: number,
   contentWidth?: number,
   contentHeight?: number,
+  crop?: CropRect,
 ): Float32Array {
   return buildDrawTransformMatrix(
     item.transform,
@@ -61,6 +62,7 @@ export function buildVideoTransformMatrix(
     stageHeight,
     contentWidth,
     contentHeight,
+    crop,
   )
 }
 
@@ -451,6 +453,15 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
 
     this._program.setUniform1i(ctx.gl, 'uTexture', unit)
     this._program.setUniform1f(ctx.gl, 'uOpacity', opacity)
+    // Always set uRadius (0 when unset) — the uniform persists in the GL
+    // program between draws, so a clip that has no cornerRadius must still
+    // clear whatever the previously-drawn clip left behind.
+    const cornerRadius = item.cornerRadius ?? 0
+    this._program.setUniform2f(ctx.gl, 'uRadius', cornerRadius, cornerRadius)
+    // Always set uCrop (zeros when unset) — same reasoning as uRadius above:
+    // the uniform persists between draws within this program.
+    const crop = item.crop
+    this._program.setUniform4f(ctx.gl, 'uCrop', crop?.x ?? 0, crop?.y ?? 0, crop?.width ?? 0, crop?.height ?? 0)
     this._program.setUniformMatrix3fv(
       ctx.gl,
       'uTransform',
@@ -461,6 +472,7 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
         ctx.stage.height,
         contentSize?.width,
         contentSize?.height,
+        crop,
       ),
     )
 

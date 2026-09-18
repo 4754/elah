@@ -55,7 +55,9 @@ function paintShape(
   const cx = (item.transform?.x ?? 0.5) * stage.width
   const cy = (item.transform?.y ?? 0.5) * stage.height
   const shortSide = Math.min(stage.width, stage.height)
-  const half = (item.transform?.scale ?? 0.5) * shortSide * 0.5
+  const baseHalf = (item.transform?.scale ?? 0.5) * shortSide * 0.5
+  const halfW = baseHalf * (item.transform?.scaleX ?? 1)
+  const halfH = baseHalf * (item.transform?.scaleY ?? 1)
 
   ctx2d.fillStyle = item.shapeFill
   ctx2d.strokeStyle = item.shapeStroke
@@ -63,19 +65,19 @@ function paintShape(
 
   if (item.shapeKind === 'rect') {
     ctx2d.beginPath()
-    ctx2d.rect(cx - half, cy - half, half * 2, half * 2)
+    ctx2d.rect(cx - halfW, cy - halfH, halfW * 2, halfH * 2)
     ctx2d.fill()
     if (item.shapeStrokeWidth > 0) ctx2d.stroke()
   } else if (item.shapeKind === 'circle') {
     ctx2d.beginPath()
-    ctx2d.arc(cx, cy, half, 0, Math.PI * 2)
+    ctx2d.ellipse(cx, cy, halfW, halfH, 0, 0, Math.PI * 2)
     ctx2d.fill()
     if (item.shapeStrokeWidth > 0) ctx2d.stroke()
   } else if (item.shapeKind === 'triangle') {
     ctx2d.beginPath()
-    ctx2d.moveTo(cx, cy - half)
-    ctx2d.lineTo(cx + half, cy + half)
-    ctx2d.lineTo(cx - half, cy + half)
+    ctx2d.moveTo(cx, cy - halfH)
+    ctx2d.lineTo(cx + halfW, cy + halfH)
+    ctx2d.lineTo(cx - halfW, cy + halfH)
     ctx2d.closePath()
     ctx2d.fill()
     if (item.shapeStrokeWidth > 0) ctx2d.stroke()

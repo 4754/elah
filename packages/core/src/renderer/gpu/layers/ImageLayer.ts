@@ -126,6 +126,15 @@ export class ImageLayer implements Layer<ActiveImageClip> {
 
     this._program.setUniform1i(gl, 'uTexture', 0)
     this._program.setUniform1f(gl, 'uOpacity', opacity)
+    // Always set uRadius (0 when unset) — see VideoLayer's identical comment:
+    // the uniform persists between draws within this program.
+    const cornerRadius = item.cornerRadius ?? 0
+    this._program.setUniform2f(gl, 'uRadius', cornerRadius, cornerRadius)
+    // Always set uCrop (zeros when unset) — the uniform persists in the GL
+    // program between draws, so a clip without a crop must still clear
+    // whatever the previously-drawn clip left behind.
+    const crop = item.crop
+    this._program.setUniform4f(gl, 'uCrop', crop?.x ?? 0, crop?.y ?? 0, crop?.width ?? 0, crop?.height ?? 0)
     this._program.setUniformMatrix3fv(
       gl,
       'uTransform',
@@ -136,6 +145,7 @@ export class ImageLayer implements Layer<ActiveImageClip> {
         ctx.stage.height,
         res.image.width,
         res.image.height,
+        crop,
       ),
     )
 

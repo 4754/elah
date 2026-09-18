@@ -60,6 +60,15 @@ export interface RendererOptions {
    * Default false.
    */
   probeLayer?: boolean
+  /** Notified when the WebGL context is lost (rendering pauses). */
+  onContextLost?: () => void
+  /** Notified when the WebGL context has been restored (rendering resumes). */
+  onContextRestored?: () => void
+  /**
+   * Notified when the context stayed lost past the recovery watchdog — the
+   * host should remount the renderer and/or surface recovery UI.
+   */
+  onContextUnrecoverable?: () => void
 }
 
 /**

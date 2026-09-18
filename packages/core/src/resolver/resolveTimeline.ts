@@ -146,6 +146,8 @@ export function resolveTimeline(frame: number, project: Project): Scene {
           volume,
           zIndex,
           ...(clip.transform ? { transform: clip.transform } : {}),
+          ...(clip.cornerRadius ? { cornerRadius: clip.cornerRadius } : {}),
+          ...(clip.crop ? { crop: clip.crop } : {}),
         }
         scene.videos.push(active)
       } else if (clip.type === 'audio' && clip.src) {
@@ -206,6 +208,8 @@ export function resolveTimeline(frame: number, project: Project): Scene {
           opacity,
           zIndex,
           ...(clip.transform ? { transform: clip.transform } : {}),
+          ...(clip.cornerRadius ? { cornerRadius: clip.cornerRadius } : {}),
+          ...(clip.crop ? { crop: clip.crop } : {}),
         }
         scene.images.push(active)
       } else if (clip.type === 'shape' && clip.shapeKind) {

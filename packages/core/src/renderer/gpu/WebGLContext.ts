@@ -23,6 +23,7 @@
 
 export type ContextLostHandler = () => void
 export type ContextRestoredHandler = (gl: WebGL2RenderingContext) => void
+export type ContextUnrecoverableHandler = () => void
 
 export interface WebGLContextOptions {
   /** Called when the GL context is lost. The caller should stop drawing. */
@@ -32,6 +33,12 @@ export interface WebGLContextOptions {
    * re-create all shaders, textures, and buffers.
    */
   onRestore?: ContextRestoredHandler
+  /**
+   * Called when the context has been lost and neither the browser nor an
+   * explicit restoreContext() attempt brought it back within the watchdog
+   * window. The host should tear down and remount the renderer.
+   */
+  onUnrecoverable?: ContextUnrecoverableHandler
   /** Requested canvas alpha; default false (opaque, avoids compositor overhead). */
   alpha?: boolean
   /** Power preference hint passed to getContext; default 'default'. */
@@ -57,6 +64,24 @@ export class WebGLContext {
 
   private readonly _onLost: ContextLostHandler | undefined
   private readonly _onRestore: ContextRestoredHandler | undefined
+  private readonly _onUnrecoverable: ContextUnrecoverableHandler | undefined
+
+  /**
+   * WEBGL_lose_context, fetched while the context is healthy — extensions
+   * cannot be obtained from a lost context, so it must be cached up front to
+   * be usable for a forced restoreContext() later.
+   */
+  private _loseContextExt: WEBGL_lose_context | null = null
+
+  private _lossCount = 0
+  private _lostAtMs = 0
+  private _restoreWatchdog: ReturnType<typeof setTimeout> | null = null
+  private _unrecoverableWatchdog: ReturnType<typeof setTimeout> | null = null
+
+  /** Ms to wait for the browser's own webglcontextrestored before forcing restoreContext(). */
+  private static readonly RESTORE_TIMEOUT_MS = 2000
+  /** Total ms lost before declaring the context unrecoverable. */
+  private static readonly UNRECOVERABLE_TIMEOUT_MS = 5000
 
   // Bound event handlers kept for removeEventListener.
   private readonly _handleLost: (e: Event) => void
@@ -65,6 +90,7 @@ export class WebGLContext {
   constructor(options: WebGLContextOptions = {}) {
     this._onLost = options.onLost
     this._onRestore = options.onRestore
+    this._onUnrecoverable = options.onUnrecoverable
 
     this.canvas = document.createElement('canvas')
     this.canvas.style.display = 'block'
@@ -106,16 +132,28 @@ export class WebGLContext {
       e.preventDefault()
       this._lost = true
       this._gl = null
+      this._lossCount++
+      this._lostAtMs = performance.now()
+      console.error(
+        `[WebGLContext] context lost (loss #${this._lossCount}); waiting up to ` +
+          `${WebGLContext.RESTORE_TIMEOUT_MS}ms for the browser to restore it`,
+      )
+      this._startRestoreWatchdog()
       this._onLost?.()
     }
 
     this._handleRestored = () => {
       this._lost = false
+      this._clearWatchdogs()
+      console.warn(
+        `[WebGLContext] context restored after ${Math.round(performance.now() - this._lostAtMs)}ms`,
+      )
       // Re-acquire the context object — it's the same canvas, same attribute bag.
       const restored = this.canvas.getContext('webgl2', ctxAttribs)
         ?? this.canvas.getContext('webgl', ctxAttribs) as unknown as WebGL2RenderingContext | null
       if (restored) {
         this._gl = restored as WebGL2RenderingContext
+        this._loseContextExt = restored.getExtension('WEBGL_lose_context')
         this._initGLState()
         this._onRestore?.(this._gl)
       }
@@ -123,6 +161,9 @@ export class WebGLContext {
 
     this.canvas.addEventListener('webglcontextlost', this._handleLost)
     this.canvas.addEventListener('webglcontextrestored', this._handleRestored)
+
+    // Cached while healthy — see _loseContextExt.
+    this._loseContextExt = this._gl.getExtension('WEBGL_lose_context')
 
     this._initGLState()
   }
@@ -190,19 +231,72 @@ export class WebGLContext {
     this._gl.clearColor(r, g, b, a)
   }
 
+  /** Number of webglcontextlost events seen over this context's lifetime. */
+  get lossCount(): number {
+    return this._lossCount
+  }
+
   /** Remove DOM event listeners and null out the context reference. */
   dispose(): void {
+    this._clearWatchdogs()
     this.canvas.removeEventListener('webglcontextlost', this._handleLost)
     this.canvas.removeEventListener('webglcontextrestored', this._handleRestored)
     // Losing the context explicitly clears all GPU objects on some drivers.
-    const ext = this._gl?.getExtension('WEBGL_lose_context')
-    ext?.loseContext()
+    const ext = this._loseContextExt ?? this._gl?.getExtension('WEBGL_lose_context')
+    try {
+      ext?.loseContext()
+    } catch {
+      // Already lost — nothing to release.
+    }
+    this._loseContextExt = null
     this._gl = null
   }
 
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Two-stage recovery watchdog, armed on context loss:
+   *  1. If the browser hasn't fired webglcontextrestored within
+   *     RESTORE_TIMEOUT_MS, force a restore attempt via WEBGL_lose_context.
+   *  2. If the context is still lost at UNRECOVERABLE_TIMEOUT_MS, give up and
+   *     tell the host so it can remount the renderer / surface UI.
+   */
+  private _startRestoreWatchdog(): void {
+    this._clearWatchdogs()
+
+    this._restoreWatchdog = setTimeout(() => {
+      if (!this._lost) return
+      console.warn(
+        '[WebGLContext] browser did not restore the context; forcing restoreContext()',
+      )
+      try {
+        this._loseContextExt?.restoreContext()
+      } catch (err) {
+        console.error('[WebGLContext] restoreContext() failed', err)
+      }
+    }, WebGLContext.RESTORE_TIMEOUT_MS)
+
+    this._unrecoverableWatchdog = setTimeout(() => {
+      if (!this._lost) return
+      console.error(
+        `[WebGLContext] context still lost after ${WebGLContext.UNRECOVERABLE_TIMEOUT_MS}ms — unrecoverable`,
+      )
+      this._onUnrecoverable?.()
+    }, WebGLContext.UNRECOVERABLE_TIMEOUT_MS)
+  }
+
+  private _clearWatchdogs(): void {
+    if (this._restoreWatchdog !== null) {
+      clearTimeout(this._restoreWatchdog)
+      this._restoreWatchdog = null
+    }
+    if (this._unrecoverableWatchdog !== null) {
+      clearTimeout(this._unrecoverableWatchdog)
+      this._unrecoverableWatchdog = null
+    }
+  }
 
   private _initGLState(): void {
     const gl = this._gl

@@ -36,6 +36,13 @@ export interface Transform {
   rotation: number
   /** Anchor point within the clip's own bounding box, normalized 0..1 */
   anchor: { x: number; y: number }
+  /**
+   * Extra horizontal stretch multiplied on top of `scale`. Omitted means 1, so
+   * every transform written before free resize existed stays uniform.
+   */
+  scaleX?: number
+  /** Extra vertical stretch multiplied on top of `scale`. Omitted means 1. */
+  scaleY?: number
 }
 
 export type ClipType = 'video' | 'audio' | 'text' | 'image' | 'shape' | 'freehand'
@@ -108,6 +115,17 @@ export interface Clip {
 
   volume?: number   // 0 – 1
   opacity?: number  // 0 – 1
+  /**
+   * Rounded-corner mask for video/image clips, as a fraction 0..0.5 of the
+   * *shorter* rendered side. 0 (or omitted) = square corners; 0.5 = a full
+   * ellipse, which on a square draw rect is a circle.
+   */
+  cornerRadius?: number
+  /**
+   * Source-space crop window, normalized 0..1 of the media's natural size,
+   * origin top-left. Omitted = the full frame. Video/image clips only.
+   */
+  crop?: { x: number; y: number; width: number; height: number }
   locked?: boolean
   disabled?: boolean
   /** Optional spatial transform; undefined means the renderer applies its own default */
