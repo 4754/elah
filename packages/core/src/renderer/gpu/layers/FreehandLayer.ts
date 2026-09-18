@@ -16,10 +16,14 @@ import type { Layer, LayerContext } from './types'
 
 const FULL_STAGE_MAT3 = new Float32Array([2, 0, 0, 0, 2, 0, -1, -1, 1])
 
+/**
+ * Per-clip resources: the GL texture holding the last painted content.
+ * Rasterization goes through ONE class-level scratch canvas shared by all
+ * freehand strokes (see TextLayer.ts for the full rationale — per-clip
+ * full-stage canvases were an unbounded memory sink).
+ */
 interface ItemResources {
   texture: WebGLTexture
-  canvas: HTMLCanvasElement
-  ctx2d: CanvasRenderingContext2D
   width: number
   height: number
   lastSignature: string
@@ -55,6 +59,9 @@ export class FreehandLayer implements Layer<ActiveFreehandClip> {
   private _vao: WebGLVertexArrayObject | null = null
   private _gl: WebGL2RenderingContext | null = null
   private readonly _resources = new Map<string, ItemResources>()
+  /** Shared rasterization canvas — see ItemResources doc. */
+  private _scratchCanvas: HTMLCanvasElement | null = null
+  private _scratchCtx: CanvasRenderingContext2D | null = null
 
   acquire(item: ActiveFreehandClip, ctx: LayerContext): void {
     const { gl } = ctx
@@ -71,18 +78,10 @@ export class FreehandLayer implements Layer<ActiveFreehandClip> {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
     gl.bindTexture(gl.TEXTURE_2D, null)
 
-    const canvas = document.createElement('canvas')
-    canvas.width = ctx.stage.width
-    canvas.height = ctx.stage.height
-    const ctx2d = canvas.getContext('2d')
-    if (!ctx2d) throw new Error('FreehandLayer: 2D context unavailable')
-
     this._resources.set(item.id, {
       texture,
-      canvas,
-      ctx2d,
-      width: canvas.width,
-      height: canvas.height,
+      width: ctx.stage.width,
+      height: ctx.stage.height,
       lastSignature: '',
     })
   }
@@ -102,8 +101,6 @@ export class FreehandLayer implements Layer<ActiveFreehandClip> {
     const { gl } = ctx
 
     if (res.width !== ctx.stage.width || res.height !== ctx.stage.height) {
-      res.canvas.width = ctx.stage.width
-      res.canvas.height = ctx.stage.height
       res.width = ctx.stage.width
       res.height = ctx.stage.height
       res.lastSignature = ''
@@ -111,10 +108,21 @@ export class FreehandLayer implements Layer<ActiveFreehandClip> {
 
     const sig = paintSignature(item, ctx.stage)
     if (res.lastSignature !== sig) {
-      paintFreehand(res.ctx2d, item, ctx.stage)
+      if (!this._scratchCanvas) {
+        this._scratchCanvas = document.createElement('canvas')
+        const ctx2d = this._scratchCanvas.getContext('2d')
+        if (!ctx2d) throw new Error('FreehandLayer: 2D context unavailable')
+        this._scratchCtx = ctx2d
+      }
+      const canvas = this._scratchCanvas
+      if (canvas.width !== ctx.stage.width || canvas.height !== ctx.stage.height) {
+        canvas.width = ctx.stage.width
+        canvas.height = ctx.stage.height
+      }
+      paintFreehand(this._scratchCtx!, item, ctx.stage)
       gl.bindTexture(gl.TEXTURE_2D, res.texture)
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, res.canvas as TexImageSource)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas as TexImageSource)
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
       gl.bindTexture(gl.TEXTURE_2D, null)
       res.lastSignature = sig
@@ -142,6 +150,8 @@ export class FreehandLayer implements Layer<ActiveFreehandClip> {
     this._program = null
     this._vao = null
     this._gl = null
+    this._scratchCanvas = null
+    this._scratchCtx = null
   }
 
   notifyContextLost(): void {
@@ -149,6 +159,8 @@ export class FreehandLayer implements Layer<ActiveFreehandClip> {
     this._program = null
     this._vao = null
     this._gl = null
+    // Scratch canvas is plain 2D-canvas state, not a GL object — kept across
+    // context loss; _ensurePipeline rebuilds the GL side.
   }
 
   private _ensurePipeline(gl: WebGL2RenderingContext): void {
