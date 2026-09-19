@@ -19,6 +19,7 @@ export type {
   Transform,
   TextAnimation,
   TextAnimationKind,
+  TextStylePreset,
   ClipType,
   TrackKind,
   FrameCount,
@@ -99,10 +100,14 @@ export type {
 export type { UseMediaLibraryApi } from '@elah/react'
 
 // --- Store hooks (React) and the vanilla stores behind them ---
-export { useTracksStore } from '@elah/react'
-export { usePlaybackStore } from '@elah/react'
-export { useSelectionStore } from '@elah/react'
-export { useTransitionsStore } from '@elah/react'
+export {
+  useTracksStore,
+  usePlaybackStore,
+  useSelectionStore,
+  useTransitionsStore,
+  useTextStylePresetsStore,
+  useClipLoadStore,
+} from '@elah/react'
 export type { BoundStoreHook } from '@elah/react'
 
 // The framework-agnostic stores. Reach for these outside React (event handlers,

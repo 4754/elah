@@ -5,7 +5,9 @@ import {
   playbackStore,
   selectionStore,
   transitionsStore,
+  textStylePresetsStore,
   mediaLibraryStore,
+  clipLoadStore,
 } from '@elah/core'
 import type {
   TracksState,
@@ -16,8 +18,12 @@ import type {
   SelectionActions,
   TransitionsState,
   TransitionsActions,
+  TextStylePresetsState,
+  TextStylePresetsActions,
   MediaLibraryState,
   MediaLibraryActions,
+  ClipLoadStoreState,
+  ClipLoadStoreActions,
 } from '@elah/core'
 
 /**
@@ -25,6 +31,9 @@ import type {
  * imperative API, so both call styles keep working under one name:
  * `useTracksStore(s => s.tracks)` in components and
  * `useTracksStore.getState()` in event handlers.
+ *
+ * This shape is why moving the stores to `zustand/vanilla` was a
+ * non-breaking change for every existing call site.
  */
 export type BoundStoreHook<S> = {
   (): S
@@ -40,5 +49,11 @@ function bindHook<S>(store: StoreApi<S>): BoundStoreHook<S> {
 export const useTracksStore = bindHook<TracksState & TracksActions>(tracksStore)
 export const usePlaybackStore = bindHook<PlaybackState & PlaybackActions>(playbackStore)
 export const useSelectionStore = bindHook<SelectionState & SelectionActions>(selectionStore)
-export const useTransitionsStore = bindHook<TransitionsState & TransitionsActions>(transitionsStore)
-export const useMediaLibraryStore = bindHook<MediaLibraryState & MediaLibraryActions>(mediaLibraryStore)
+export const useTransitionsStore =
+  bindHook<TransitionsState & TransitionsActions>(transitionsStore)
+export const useTextStylePresetsStore =
+  bindHook<TextStylePresetsState & TextStylePresetsActions>(textStylePresetsStore)
+export const useMediaLibraryStore =
+  bindHook<MediaLibraryState & MediaLibraryActions>(mediaLibraryStore)
+export const useClipLoadStore =
+  bindHook<ClipLoadStoreState & ClipLoadStoreActions>(clipLoadStore)

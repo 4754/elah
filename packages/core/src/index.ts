@@ -124,15 +124,27 @@ export type {
   SkippedImport,
 } from './assets'
 
-// --- Stores (Ring 1: vanilla Zustand mirrors; React hooks live in @elah/react) ---
+// --- Stores (Ring 1 mirrors + Ring 2 UI state) — vanilla; see @elah/react ---
 export { tracksStore } from './stores/tracks.store'
 export type { TracksState, TracksActions } from './stores/tracks.store'
 export { playbackStore } from './stores/playback.store'
 export type { PlaybackState, PlaybackActions } from './stores/playback.store'
+export { clipLoadStore } from './stores/clipLoad.store'
+export type {
+  ClipLoadState,
+  ClipLoadStoreState,
+  ClipLoadStoreActions,
+} from './stores/clipLoad.store'
 export { selectionStore } from './stores/selection.store'
 export type { SelectionState, SelectionActions } from './stores/selection.store'
 export { transitionsStore } from './stores/transitions.store'
 export type { TransitionsState, TransitionsActions } from './stores/transitions.store'
+export { textStylePresetsStore, BUILT_IN_TEXT_STYLE_PRESETS } from './stores/textStylePresets.store'
+export type {
+  TextStylePreset,
+  TextStylePresetsState,
+  TextStylePresetsActions,
+} from './stores/textStylePresets.store'
 
 // --- Clip factories ---
 export type { CreateClipOptions, ShapeClipMetadata, FreehandClipMetadata } from './elements/base'

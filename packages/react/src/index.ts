@@ -9,13 +9,15 @@
 export { EditorContext, useEditor, useTimelineEngine, usePlaybackEngine } from './editor-context'
 export type { EditorContextValue } from './editor-context'
 
-// --- Store hooks (Ring 1: React views over core's vanilla Zustand mirrors) ---
+// --- Store hooks (React views over core's vanilla Zustand stores) ---
 export {
   useTracksStore,
   usePlaybackStore,
   useSelectionStore,
   useTransitionsStore,
+  useTextStylePresetsStore,
   useMediaLibraryStore,
+  useClipLoadStore,
 } from './stores'
 export type { BoundStoreHook } from './stores'
 
