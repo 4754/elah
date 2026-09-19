@@ -88,7 +88,8 @@ function createMockGL(): WebGL2RenderingContext {
 // Mock 2D canvas (vitest runs in the `node` environment — no real DOM).
 // ---------------------------------------------------------------------------
 
-function makeMockCanvasFactory(): TextCanvasFactory {
+/** `ctxSink` collects every 2D context handed out, for paint-call assertions. */
+function makeMockCanvasFactory(ctxSink?: unknown[]): TextCanvasFactory {
   return () => {
     const ctx2d = {
       font: '',
@@ -98,7 +99,12 @@ function makeMockCanvasFactory(): TextCanvasFactory {
       clearRect: vi.fn(),
       fillText: vi.fn(),
       measureText: vi.fn(() => ({ width: 10 })),
+      save: vi.fn(),
+      restore: vi.fn(),
+      translate: vi.fn(),
+      rotate: vi.fn(),
     }
+    ctxSink?.push(ctx2d)
     const canvas = {
       width: 0,
       height: 0,
@@ -234,23 +240,36 @@ describe('TextLayer', () => {
     expect(gl.texImage2D).toHaveBeenCalledTimes(2)
   })
 
-  it('uses the full-stage matrix when rotation is 0, a different one when rotated', () => {
+  it('rotates at paint time: matrix stays full-stage, rotation re-rasterizes via ctx.rotate', () => {
+    // Rotation must be baked into the painted pixels (mirroring
+    // ExportWorker.drawText), NOT applied by the quad matrix — a shader-side
+    // rotation clips the glyph run at the unrotated stage bounds first, so text
+    // whose rotated placement is fully on-stage came out truncated.
     const FULL_STAGE = [2, 0, 0, 0, 2, 0, -1, -1, 1]
+    const ctxs: Array<{ rotate: ReturnType<typeof vi.fn> }> = []
+    layer = new TextLayer(makeMockCanvasFactory(ctxs))
 
     const flat = makeClip({
       transform: { x: 0.5, y: 0.5, scale: 1, rotation: 0, anchor: { x: 0.5, y: 0.5 } },
     })
     layer.acquire(flat, ctx)
     layer.draw(flat, ctx)
-    const calls = (gl.uniformMatrix3fv as unknown as { mock: { calls: unknown[][] } }).mock.calls
-    const flatMat = Array.from(calls[calls.length - 1][2] as Float32Array)
-    expect(flatMat).toEqual(FULL_STAGE)
+    expect(ctxs[0].rotate).not.toHaveBeenCalled()
 
     const rotated = makeClip({
       transform: { x: 0.5, y: 0.5, scale: 1, rotation: 1, anchor: { x: 0.5, y: 0.5 } },
     })
     layer.draw(rotated, ctx)
-    const rotMat = Array.from(calls[calls.length - 1][2] as Float32Array)
-    expect(rotMat).not.toEqual(FULL_STAGE)
+
+    // Rotation changed the paint signature → repainted + re-uploaded, with the
+    // rotation applied on the 2D context.
+    expect(gl.texImage2D).toHaveBeenCalledTimes(2)
+    expect(ctxs[0].rotate).toHaveBeenCalledWith(1)
+
+    // The quad matrix never carries the rotation.
+    const calls = (gl.uniformMatrix3fv as unknown as { mock: { calls: unknown[][] } }).mock.calls
+    for (const call of calls) {
+      expect(Array.from(call[2] as Float32Array)).toEqual(FULL_STAGE)
+    }
   })
 })

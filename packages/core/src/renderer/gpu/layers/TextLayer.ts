@@ -16,7 +16,6 @@
  */
 
 import type { ActiveTextClip } from '../../../resolver/scene'
-import type { Transform } from '../../../types'
 import { ShaderProgram } from '../ShaderProgram'
 import { QUAD_FRAG_SRC } from '../shaders/quad.frag'
 import { QUAD_VERT_SRC } from '../shaders/quad.vert'
@@ -34,53 +33,40 @@ import type { Layer, LayerContext } from './types'
  */
 const FULL_STAGE_MAT3 = new Float32Array([2, 0, 0, 0, 2, 0, -1, -1, 1])
 
-/**
- * Column-major 3×3 mapping the full-stage text canvas to clip space, with an
- * optional rotation about the text block's centre.
- *
- * `transform.scale` is NOT applied here — it is baked into the painted fontSize
- * (see computeTextLayout). Only rotation needs the shader. The pivot is the
- * block centre `(transform.x, transform.y)` in normalized stage coords (default
- * 0.5, 0.5), matching computeTextLayout. The rotation is aspect-corrected (the
- * W/H, H/W terms) so glyphs rotate without shearing on a non-square stage.
- *
- * Reduces exactly to FULL_STAGE_MAT3 when rotation is 0.
- */
-function buildTextTransformMatrix(
-  transform: Transform | undefined,
-  stage: { width: number; height: number },
-): Float32Array {
-  if (!transform || transform.rotation === 0) {
-    return FULL_STAGE_MAT3
-  }
-
-  const a = Math.cos(transform.rotation)
-  const b = Math.sin(transform.rotation)
-  const px = transform.x
-  const py = transform.y
-  const wOverH = stage.width / stage.height
-  const hOverW = stage.height / stage.width
-
-  const txx = 2 * (px - a * px + b * hOverW * py) - 1
-  const tyy = 2 * (py - b * wOverH * px - a * py) - 1
-
-  // Column-major: column 0 → clip.x/clip.y coeffs for u, column 1 → for v.
-  return new Float32Array([
-    2 * a, 2 * b * wOverH, 0,
-    -2 * b * hOverW, 2 * a, 0,
-    txx, tyy, 1,
-  ])
+/** Traces a rounded-rect path (radius clamped to half the shorter side) without relying on `ctx.roundRect`. */
+function roundRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
+  const radius = Math.max(0, Math.min(r, w / 2, h / 2))
+  ctx.beginPath()
+  ctx.moveTo(x + radius, y)
+  ctx.arcTo(x + w, y, x + w, y + h, radius)
+  ctx.arcTo(x + w, y + h, x, y + h, radius)
+  ctx.arcTo(x, y + h, x, y, radius)
+  ctx.arcTo(x, y, x + w, y, radius)
+  ctx.closePath()
 }
 
 /** Factory for the offscreen paint canvas; injectable so tests can mock the DOM. */
 export type TextCanvasFactory = () => HTMLCanvasElement
 
-/** Per-clip resources: GL texture + the 2D canvas we repaint when text/style changes. */
+/**
+ * Per-clip resources: the GL texture holding the last painted content.
+ *
+ * Rasterization goes through ONE class-level scratch canvas shared by all
+ * clips (paint → texImage2D is synchronous per item, so no two items need the
+ * canvas at once). Per-clip full-stage canvases were an unbounded memory sink:
+ * every subtitle/text clip pinned stage.width × stage.height × 4 bytes of
+ * canvas backing store for its whole lifetime.
+ */
 interface ItemResources {
   texture: WebGLTexture
-  canvas: HTMLCanvasElement
-  ctx2d: CanvasRenderingContext2D
-  /** Canvas dimensions currently allocated — repaint forced when the stage resizes. */
+  /** Stage dimensions at last paint — repaint forced when the stage resizes. */
   width: number
   height: number
   /** Signature of the last painted content+style; skips re-upload when unchanged. */
@@ -96,11 +82,21 @@ function paintSignature(item: ActiveTextClip, stage: { width: number; height: nu
     item.fontFamily,
     item.fontWeight,
     item.textAlign,
+    item.backgroundColor,
+    item.backgroundOpacity,
+    item.padding,
+    item.borderRadius,
+    item.borderWidth,
+    item.borderColor,
     item.transform?.x,
     item.transform?.y,
     // scale is baked into the painted fontSize, so it changes the pixels.
-    // (rotation is shader-only and intentionally absent — no repaint needed.)
     item.transform?.scale,
+    // rotation is applied at paint time (ctx.rotate, mirroring
+    // ExportWorker.drawText) — rotating in the shader instead would clip the
+    // glyph run at the UNROTATED stage bounds before the rotation ever ran,
+    // truncating text whose rotated placement is fully on-stage.
+    item.transform?.rotation,
     stage.width,
     stage.height,
   ])
@@ -112,6 +108,9 @@ export class TextLayer implements Layer<ActiveTextClip> {
   private _gl: WebGL2RenderingContext | null = null
   private readonly _resources = new Map<string, ItemResources>()
   private readonly _createCanvas: TextCanvasFactory
+  /** Shared rasterization canvas — see ItemResources doc. */
+  private _scratchCanvas: HTMLCanvasElement | null = null
+  private _scratchCtx: CanvasRenderingContext2D | null = null
 
   constructor(createCanvas?: TextCanvasFactory) {
     this._createCanvas = createCanvas ?? (() => document.createElement('canvas'))
@@ -134,20 +133,10 @@ export class TextLayer implements Layer<ActiveTextClip> {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
     gl.bindTexture(gl.TEXTURE_2D, null)
 
-    const canvas = this._createCanvas()
-    canvas.width = ctx.stage.width
-    canvas.height = ctx.stage.height
-    const ctx2d = canvas.getContext('2d')
-    if (!ctx2d) {
-      throw new Error('TextLayer: 2D context unavailable')
-    }
-
     this._resources.set(item.id, {
       texture,
-      canvas,
-      ctx2d,
-      width: canvas.width,
-      height: canvas.height,
+      width: ctx.stage.width,
+      height: ctx.stage.height,
       lastSignature: '',
     })
   }
@@ -168,11 +157,9 @@ export class TextLayer implements Layer<ActiveTextClip> {
 
     const { gl } = ctx
 
-    // The stage can change (e.g. project aspect edit / resize). Resize the paint
-    // canvas to match and force a repaint.
+    // The stage can change (e.g. project aspect edit / resize). Force a
+    // repaint (the shared scratch canvas is resized in _paint as needed).
     if (res.width !== ctx.stage.width || res.height !== ctx.stage.height) {
-      res.canvas.width = ctx.stage.width
-      res.canvas.height = ctx.stage.height
       res.width = ctx.stage.width
       res.height = ctx.stage.height
       res.lastSignature = ''
@@ -180,7 +167,7 @@ export class TextLayer implements Layer<ActiveTextClip> {
 
     const sig = paintSignature(item, ctx.stage)
     if (res.lastSignature !== sig) {
-      this._paint(res, item, ctx.stage)
+      const canvas = this._paint(item, ctx.stage)
       gl.bindTexture(gl.TEXTURE_2D, res.texture)
       // Premultiply on upload so antialiased glyph edges blend correctly against
       // the premultiplied blend func; restore the default immediately so the
@@ -192,7 +179,7 @@ export class TextLayer implements Layer<ActiveTextClip> {
         gl.RGBA,
         gl.RGBA,
         gl.UNSIGNED_BYTE,
-        res.canvas as TexImageSource,
+        canvas as TexImageSource,
       )
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
       gl.bindTexture(gl.TEXTURE_2D, null)
@@ -209,12 +196,7 @@ export class TextLayer implements Layer<ActiveTextClip> {
 
     this._program.setUniform1i(gl, 'uTexture', 0)
     this._program.setUniform1f(gl, 'uOpacity', opacity)
-    this._program.setUniformMatrix3fv(
-      gl,
-      'uTransform',
-      false,
-      buildTextTransformMatrix(item.transform, ctx.stage),
-    )
+    this._program.setUniformMatrix3fv(gl, 'uTransform', false, FULL_STAGE_MAT3)
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
 
@@ -234,6 +216,8 @@ export class TextLayer implements Layer<ActiveTextClip> {
     this._program = null
     this._vao = null
     this._gl = null
+    this._scratchCanvas = null
+    this._scratchCtx = null
   }
 
   /** Drop GL object references after a context loss (no GL calls — context is gone). */
@@ -242,6 +226,8 @@ export class TextLayer implements Layer<ActiveTextClip> {
     this._program = null
     this._vao = null
     this._gl = null
+    // The scratch canvas itself is plain 2D-canvas state, not a GL object —
+    // safe to keep across context loss; _ensurePipeline rebuilds the GL side.
   }
 
   /** Exposed for testing: number of per-clip texture handles. */
@@ -253,12 +239,26 @@ export class TextLayer implements Layer<ActiveTextClip> {
   // Private helpers
   // ---------------------------------------------------------------------------
 
+  /** Rasterize `item` into the shared scratch canvas (resized as needed) and return it. */
   private _paint(
-    res: ItemResources,
     item: ActiveTextClip,
     stage: { width: number; height: number },
-  ): void {
-    const { ctx2d } = res
+  ): HTMLCanvasElement {
+    if (!this._scratchCanvas) {
+      this._scratchCanvas = this._createCanvas()
+      const ctx2d = this._scratchCanvas.getContext('2d')
+      if (!ctx2d) {
+        throw new Error('TextLayer: 2D context unavailable')
+      }
+      this._scratchCtx = ctx2d
+    }
+    const canvas = this._scratchCanvas
+    const ctx2d = this._scratchCtx!
+
+    if (canvas.width !== stage.width || canvas.height !== stage.height) {
+      canvas.width = stage.width
+      canvas.height = stage.height
+    }
 
     ctx2d.clearRect(0, 0, stage.width, stage.height)
 
@@ -266,6 +266,47 @@ export class TextLayer implements Layer<ActiveTextClip> {
     // to place the lines are exactly the ones we paint with. The same call backs
     // the editor overlay's selection box, keeping handles glued to the glyphs.
     const layout = computeTextLayout(ctx2d, item, stage)
+    const { backgroundColor, backgroundOpacity, borderWidth, borderColor, borderRadius } = layout.style
+
+    // Pixel-space rotation about the block centre, identical to
+    // ExportWorker.drawText — the painted canvas IS the rotated result, so the
+    // quad ships to the shader untransformed and glyphs clip only at the true
+    // stage bounds (never at the unrotated run's bounds).
+    const rotation = item.transform?.rotation ?? 0
+    ctx2d.save()
+    if (rotation !== 0) {
+      const cx = layout.center.x * stage.width
+      const cy = layout.center.y * stage.height
+      ctx2d.translate(cx, cy)
+      ctx2d.rotate(rotation)
+      ctx2d.translate(-cx, -cy)
+    }
+
+    if (backgroundColor) {
+      ctx2d.save()
+      ctx2d.globalAlpha = backgroundOpacity
+      ctx2d.fillStyle = backgroundColor
+      roundRectPath(ctx2d, layout.box.x, layout.box.y, layout.box.width, layout.box.height, borderRadius)
+      ctx2d.fill()
+      ctx2d.restore()
+    }
+
+    if (borderWidth > 0) {
+      ctx2d.save()
+      ctx2d.strokeStyle = borderColor
+      ctx2d.lineWidth = borderWidth
+      const inset = borderWidth / 2
+      roundRectPath(
+        ctx2d,
+        layout.box.x + inset,
+        layout.box.y + inset,
+        layout.box.width - borderWidth,
+        layout.box.height - borderWidth,
+        Math.max(0, borderRadius - inset),
+      )
+      ctx2d.stroke()
+      ctx2d.restore()
+    }
 
     ctx2d.fillStyle = layout.style.color
     ctx2d.textBaseline = 'middle'
@@ -274,6 +315,9 @@ export class TextLayer implements Layer<ActiveTextClip> {
     layout.lines.forEach((line, i) => {
       ctx2d.fillText(line, layout.anchorX, layout.firstLineY + i * layout.lineAdvance)
     })
+
+    ctx2d.restore()
+    return canvas
   }
 
   private _ensurePipeline(gl: WebGL2RenderingContext): void {

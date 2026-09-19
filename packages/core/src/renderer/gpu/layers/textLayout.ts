@@ -23,6 +23,13 @@ export const DEFAULT_COLOR = '#ffffff'
 export const DEFAULT_FONT_FAMILY = 'sans-serif'
 export const DEFAULT_FONT_WEIGHT: 'normal' | 'bold' = 'normal'
 export const DEFAULT_TEXT_ALIGN: 'left' | 'center' | 'right' = 'center'
+/** Undefined = no background painted behind the glyphs. */
+export const DEFAULT_BACKGROUND_COLOR: string | undefined = undefined
+export const DEFAULT_BACKGROUND_OPACITY = 1
+export const DEFAULT_PADDING = 0
+export const DEFAULT_BORDER_RADIUS = 0
+export const DEFAULT_BORDER_WIDTH = 0
+export const DEFAULT_BORDER_COLOR = '#ffffff'
 
 /** Fraction of stage width left empty on each side (text wraps within the rest). */
 export const SIDE_MARGIN = 0.05
@@ -38,6 +45,13 @@ export interface ResolvedTextStyle {
   fontFamily: string
   fontWeight: 'normal' | 'bold'
   textAlign: 'left' | 'center' | 'right'
+  /** Undefined = no background painted behind the glyphs. */
+  backgroundColor?: string
+  backgroundOpacity: number
+  padding: number
+  borderRadius: number
+  borderWidth: number
+  borderColor: string
 }
 
 /** Bounding box in stage-space pixels. */
@@ -73,6 +87,12 @@ export function resolveTextStyle(item: {
   fontFamily?: string
   fontWeight?: 'normal' | 'bold'
   textAlign?: 'left' | 'center' | 'right'
+  backgroundColor?: string
+  backgroundOpacity?: number
+  padding?: number
+  borderRadius?: number
+  borderWidth?: number
+  borderColor?: string
 }): ResolvedTextStyle {
   return {
     fontSize: item.fontSize ?? DEFAULT_FONT_SIZE,
@@ -80,6 +100,12 @@ export function resolveTextStyle(item: {
     fontFamily: item.fontFamily ?? DEFAULT_FONT_FAMILY,
     fontWeight: item.fontWeight ?? DEFAULT_FONT_WEIGHT,
     textAlign: item.textAlign ?? DEFAULT_TEXT_ALIGN,
+    backgroundColor: item.backgroundColor ?? DEFAULT_BACKGROUND_COLOR,
+    backgroundOpacity: item.backgroundOpacity ?? DEFAULT_BACKGROUND_OPACITY,
+    padding: item.padding ?? DEFAULT_PADDING,
+    borderRadius: item.borderRadius ?? DEFAULT_BORDER_RADIUS,
+    borderWidth: item.borderWidth ?? DEFAULT_BORDER_WIDTH,
+    borderColor: item.borderColor ?? DEFAULT_BORDER_COLOR,
   }
 }
 
@@ -164,6 +190,18 @@ export function computeTextLayout(
 
   const firstLineY = boxY + lineAdvance / 2
 
+  // The glyph box padded out by `style.padding` — this is what the background
+  // fill/border paint, and what the editor overlay draws its selection box
+  // around, so padding reads as "space around the text" rather than shifting
+  // the glyphs themselves (anchorX/firstLineY above stay glyph-tight).
+  const padding = style.padding
+  const box: StageRect = {
+    x: boxX - padding,
+    y: boxY - padding,
+    width: maxLineWidth + padding * 2,
+    height: blockHeight + padding * 2,
+  }
+
   return {
     style,
     font,
@@ -171,7 +209,7 @@ export function computeTextLayout(
     lineAdvance,
     anchorX,
     firstLineY,
-    box: { x: boxX, y: boxY, width: maxLineWidth, height: blockHeight },
+    box,
     center,
   }
 }

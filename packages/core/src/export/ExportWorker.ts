@@ -115,11 +115,11 @@ self.onmessage = async (e: MessageEvent) => {
     const buffer = await runExport(project, options, audio)
     xlog('worker', 'posting buffer to main thread', { size: fmtBytes(buffer.byteLength) })
     const msg: WorkerOutMessage = { type: 'done', buffer }
-    ;(self as unknown as Worker).postMessage(msg, [buffer])
+      ; (self as unknown as Worker).postMessage(msg, [buffer])
   } catch (err) {
     xlog('worker', `export failed: ${String(err)}`)
     const msg: WorkerOutMessage = { type: 'error', message: String(err) }
-    ;(self as unknown as Worker).postMessage(msg)
+      ; (self as unknown as Worker).postMessage(msg)
   }
 }
 
@@ -355,7 +355,7 @@ async function runExport(project: Project, options: ExportOptions, audio: Render
     }
 
     const msg: WorkerOutMessage = { type: 'progress', frame, totalFrames }
-    ;(self as unknown as Worker).postMessage(msg)
+      ; (self as unknown as Worker).postMessage(msg)
   }
 
   const loopMs = performance.now() - loopStart
