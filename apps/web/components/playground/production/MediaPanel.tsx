@@ -38,9 +38,11 @@ import {
   type InsertAssetResult,
 } from '@elah/editor'
 import { cn } from '@/lib/utils'
+import { isImageFile, needsJpegConversion, toJpegFile } from '@/lib/imageNormalize'
 import { PixabayResults } from './PixabayResults'
 import { PexelsResults } from './PexelsResults'
 import { FreesoundResults } from './FreesoundResults'
+import { ProgressBar } from './ai/ProgressBar'
 
 export type PanelMode = 'stock' | 'photos' | 'audio'
 
@@ -303,6 +305,8 @@ export function MediaPanel({ style, mode = 'stock' }: { style?: React.CSSPropert
   const [urlFallback, setUrlFallback] = useState<string | null>(null)
   const [insertNotice, setInsertNotice] = useState<InsertNotice | null>(null)
   const [activeAssetId, setActiveAssetId] = useState<string | null>(null)
+  const [converting, setConverting] = useState(0)
+  const [convertError, setConvertError] = useState<string | null>(null)
 
   const cfg = PANEL_CONFIG[mode]
   const sourceOptions = SOURCE_OPTIONS[mode]
@@ -319,7 +323,40 @@ export function MediaPanel({ style, mode = 'stock' }: { style?: React.CSSPropert
 
   const onPick = useCallback(async (files: FileList | File[] | null) => {
     if (!files || ('length' in files && files.length === 0)) return
-    await importFiles(files)
+
+    const picked = Array.from(files)
+    // `isImageFile` rather than a MIME check: the Android HEIC this exists for
+    // arrives with an empty `type`, which is also how video/audio would look —
+    // so the extension is the only thing that distinguishes them.
+    const toConvert = picked.filter((f) => isImageFile(f) && needsJpegConversion(f))
+    if (toConvert.length === 0) {
+      await importFiles(picked)
+      return
+    }
+
+    setConvertError(null)
+    setConverting(toConvert.length)
+    const failed: string[] = []
+    try {
+      const prepared = await Promise.all(
+        picked.map(async (file) => {
+          if (!toConvert.includes(file)) return file
+          try {
+            return await toJpegFile(file)
+          } catch {
+            failed.push(file.name)
+            return null
+          }
+        }),
+      )
+      await importFiles(prepared.filter((f): f is File => f !== null))
+    } finally {
+      setConverting(0)
+    }
+
+    if (failed.length > 0) {
+      setConvertError(`Could not read ${failed.join(', ')} — try a JPEG or PNG.`)
+    }
   }, [])
 
   const onAddUrl = useCallback(async () => {
@@ -457,6 +494,24 @@ export function MediaPanel({ style, mode = 'stock' }: { style?: React.CSSPropert
             {urlError && <span className="mt-1 text-[11px] text-ed-error">{urlError}</span>}
             {urlFallback && <span className="mt-1 text-[11px] text-ed-text-muted">{urlFallback}</span>}
           </>
+        )}
+
+        {converting > 0 && (
+          <div role="status" className="mt-2 rounded-md border border-ed-border bg-ed-elevated px-2.5 py-1.5">
+            <ProgressBar
+              indeterminate
+              label={`Converting ${converting} ${converting === 1 ? 'image' : 'images'}…`}
+            />
+          </div>
+        )}
+
+        {convertError && (
+          <div
+            role="alert"
+            className="mt-2 rounded-md border border-ed-error/40 bg-ed-error/10 px-2.5 py-1.5 text-[12px] text-ed-error"
+          >
+            {convertError}
+          </div>
         )}
 
         {insertNotice && (

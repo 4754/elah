@@ -1,8 +1,8 @@
-export type { MediaAsset, MediaKind, DragMediaPayload } from './types'
+export type { MediaAsset, MediaKind, DragMediaPayload, MediaAssetAnalysis, MediaAssetTopObject } from './types'
 export { MEDIA_DRAG_MIME, mediaDragKindMime } from './types'
 export { mediaLibraryStore } from './store'
 export type { MediaLibraryState, MediaLibraryActions } from './store'
-export { importFiles, importUrl, importBlob, scheduleThumbnailById } from './importFiles'
+export { importFiles, importUrl, importBlob, beginImportUrl, scheduleThumbnailById } from './importFiles'
 export {
   snapshotMediaLibrary,
   hydrateMediaLibrary,

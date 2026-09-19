@@ -1,6 +1,27 @@
 /** Kind of media this asset represents. */
 export type MediaKind = 'video' | 'audio' | 'image'
 
+/** A tallied object/subject detected across a video's analyzed frames. */
+export interface MediaAssetTopObject {
+  name: string
+  occurrences: number
+}
+
+/**
+ * AI-generated understanding of a video's content (tags, summary, detected
+ * objects), copied verbatim from the gallery item's `catalog` at the moment
+ * an asset is imported from the gallery. Structurally mirrors the backend's
+ * `GalleryItemCatalog` (see `apps/web/lib/gallery-types.ts`) — kept as a
+ * local shape here so `@elah-premium/core` has no dependency on `apps/web`.
+ */
+export interface MediaAssetAnalysis {
+  tags: string[]
+  summary: string
+  frameCount: number
+  topObjects: MediaAssetTopObject[]
+  durationSec: number
+}
+
 /**
  * A single piece of source media registered in the editor's MediaLibrary.
  * Clips reference assets by `id`; the asset owns the metadata (duration,
@@ -34,6 +55,17 @@ export interface MediaAsset {
   lastModified: number
   /** Epoch ms. Used for display order and tie-breaking. */
   addedAt: number
+  /**
+   * AI content analysis of this source, produced by the backend's async
+   * pipeline. Set at import for a gallery item whose analysis had already
+   * completed, and otherwise patched in later by the app once the pipeline
+   * finishes (uploads have no analysis at import time by definition — the file
+   * has only just reached the backend). So it is undefined until analysis
+   * lands, and stays undefined for a source that was never analyzed or whose
+   * analysis failed. Consumed by caption auto-generation and by narration
+   * drafting.
+   */
+  analysis?: MediaAssetAnalysis
   /**
    * `'pending'` while metadata (duration/dimensions) is still being probed from
    * a remote URL — `durationSec`/`width`/`height` hold provisional/fallback

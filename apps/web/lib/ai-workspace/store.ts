@@ -30,6 +30,7 @@ interface AIWorkspaceState {
   prompt: string
   messages: ChatMessage[]
   error: string | null
+  captionTrackIds: string[]
 }
 
 interface AIWorkspaceActions {
@@ -41,6 +42,7 @@ interface AIWorkspaceActions {
   clearCards: () => void
   resolvePendingMessage: (id: string, patch: Partial<ChatMessage>) => void
   setError: (error: string | null) => void
+  setCaptionTrackIds: (ids: string[]) => void
   reset: () => void
 }
 
@@ -51,6 +53,7 @@ export const useAIWorkspaceStore = create<AIWorkspaceState & AIWorkspaceActions>
   prompt: '',
   messages: [],
   error: null,
+  captionTrackIds: [],
 
   setChatCollapsed: (chatCollapsed) => set({ chatCollapsed }),
   setComposerMode: (composerMode) => set({ composerMode }),
@@ -64,6 +67,7 @@ export const useAIWorkspaceStore = create<AIWorkspaceState & AIWorkspaceActions>
       messages: s.messages.map((m) => (m.id === id ? { ...m, ...patch, pending: false } : m)),
     })),
   setError: (error) => set({ error }),
+  setCaptionTrackIds: (captionTrackIds) => set({ captionTrackIds }),
   reset: () =>
     set({
       chatCollapsed: false,
@@ -72,5 +76,6 @@ export const useAIWorkspaceStore = create<AIWorkspaceState & AIWorkspaceActions>
       prompt: '',
       messages: [],
       error: null,
+      captionTrackIds: [],
     }),
 }))

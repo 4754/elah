@@ -120,6 +120,7 @@ export {
   importFiles,
   importUrl,
   importBlob,
+  beginImportUrl,
   determineAssetHasAudio,
   probeHasAudio,
 } from '@elah/core'
@@ -128,6 +129,8 @@ export type {
   MediaAsset,
   MediaKind,
   DragMediaPayload,
+  MediaAssetAnalysis,
+  MediaAssetTopObject,
   ImportFilesOptions,
   ImportFilesResult,
   ImportUrlOptions,

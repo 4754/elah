@@ -1,7 +1,8 @@
 'use client'
 
 import posthog from 'posthog-js'
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   Type as TypeIcon,
@@ -22,6 +23,13 @@ import {
   SlidersHorizontal,
   Sparkles,
   X,
+  ArrowLeft,
+  GripVertical,
+  GripHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
 } from 'lucide-react'
 import { ClipProperties } from './properties/ClipProperties'
 import { TimelineControls } from '../shared/TimelineControls'
@@ -32,10 +40,23 @@ import { BackButton } from '../shared/BackButton'
 import { MediaPanel, type PanelMode } from './MediaPanel'
 import { AgenticPanel } from './AgenticPanel'
 import { TracePanel } from './TracePanel'
+import { ProjectDocumentBridge, type EditorProjectChrome } from './ProjectDocumentBridge'
+import { StoryboardComposeBridge } from './StoryboardComposeBridge'
+import { LocalProjectBridge } from './LocalProjectBridge'
+import {
+  ProjectConflictDialog,
+  ProjectMediaNotice,
+  ProjectSaveIndicator,
+  ProjectUnreadableDialog,
+} from './ProjectSaveChrome'
+import {
+  editorPanelToggleLabel,
+  readEditorPanelCollapsed,
+  writeEditorPanelCollapsed,
+} from '@/lib/editor/panelCollapse'
 import { siteConfig } from '@/config/site'
 import { cn } from '@/lib/utils'
 import {
-  // SourcePanel,  // replaced by MediaPanel (app-side revamp) — discard later
   ElementsPanel,
   EditorProvider,
   Preview,
@@ -170,13 +191,6 @@ function PreviewEditButton({ onOpenSheet }: { onOpenSheet: (kind: MobileSheetKin
   )
 }
 
-// Default lanes. The model allows a single video track but any number of audio
-// / elements tracks, so we seed extra text + audio lanes up front: four elements
-// tracks (text overlays) on top, one video, then two audio lanes (one main,
-// full-volume track plus one lower-volume secondary track). The demo loader
-// fills the elements lanes; the audio lanes start empty.
-// Order is top→bottom in the UI (lower index = higher zIndex, renders on top),
-// per resolveTimeline's track.order → zIndex mapping.
 const INITIAL_TRACKS: InitialTrackConfig[] = [
   { kind: 'video', name: 'Video' },
   { kind: 'elements', name: 'Elements' },
@@ -195,48 +209,68 @@ const AppHeader = memo(function AppHeader({
   onExport,
   onToggleCode,
   codeOpen,
+  project,
 }: {
   onExport: () => void
   onToggleCode: () => void
   codeOpen: boolean
+  project?: EditorProjectChrome
 }) {
   const [showTrace, setShowTrace] = useState(false)
   const [showOverflow, setShowOverflow] = useState(false)
   const canUndo = useTracksStore((s) => s.canUndo)
   const canRedo = useTracksStore((s) => s.canRedo)
   const engine = useTimelineEngine()
-  // Conditional rendering, not responsive classes: the published packages ship
-  // their own Tailwind utilities (.hidden/.inline-flex), and stylesheet load
-  // order lets those beat the app's md: variants either way.
   const isMobile = useIsMobile()
-  // The standalone /editor route is the embeddable, chrome-free surface —
-  // it keeps only brand, undo/redo, export, and the GitHub link.
   const pathname = usePathname()
   const isStandalone = pathname === '/editor'
 
   return (
     <header className="elah-app-header grid grid-cols-[1fr_auto_1fr] items-center px-4 h-[46px] bg-ed-bg-2 border-b border-ed-border shrink-0">
-      {/* Left — folded playground nav + brand + demo CTA */}
+      {/* Left — project chrome, or folded playground nav + brand + demo CTA */}
       <div className="flex items-center gap-3">
-        {!isStandalone && <BackButton />}
-        {!isMobile && (
+        {project ? (
           <>
-            {!isStandalone && <div className="w-px h-4 bg-ed-border shrink-0" />}
-            <span className="inline-flex items-center gap-2">
-              <span
-                className="w-[7px] h-[7px] rounded-full shrink-0"
-                style={{
-                  background: 'var(--elah-accent)',
-                  boxShadow: '0 0 8px var(--elah-accent-glow)',
-                }}
-              />
-              <span className="text-[13px] font-bold text-ed-text tracking-[-0.02em]">
-                elah
-              </span>
-              <span className="text-[11px] font-mono text-ed-text-muted">
-                @elah/editor
-              </span>
-            </span>
+            <Link
+              href={`/projects/${project.id}`}
+              className="inline-flex items-center gap-1.5 shrink-0 px-2 py-1 -ml-2 rounded text-[13px] font-medium text-ed-text-muted hover:bg-ed-elevated hover:text-ed-text transition-colors"
+            >
+              <ArrowLeft size={15} aria-hidden />
+              {!isMobile && 'Back to project'}
+            </Link>
+            {!isMobile && (
+              <>
+                <div className="w-px h-4 bg-ed-border shrink-0" />
+                <span className="truncate text-[14px] font-medium text-ed-text" title={project.name}>
+                  {project.name}
+                </span>
+              </>
+            )}
+            <ProjectSaveIndicator />
+          </>
+        ) : (
+          <>
+            {!isStandalone && <BackButton />}
+            {!isMobile && (
+              <>
+                {!isStandalone && <div className="w-px h-4 bg-ed-border shrink-0" />}
+                <span className="inline-flex items-center gap-2">
+                  <span
+                    className="w-[7px] h-[7px] rounded-full shrink-0"
+                    style={{
+                      background: 'var(--elah-accent)',
+                      boxShadow: '0 0 8px var(--elah-accent-glow)',
+                    }}
+                  />
+                  <span className="text-[13px] font-bold text-ed-text tracking-[-0.02em]">
+                    elah
+                  </span>
+                  <span className="text-[11px] font-mono text-ed-text-muted">
+                    @elah/editor
+                  </span>
+                </span>
+              </>
+            )}
           </>
         )}
       </div>
@@ -278,8 +312,7 @@ const AppHeader = memo(function AppHeader({
         )}
       </div>
 
-      {/* Right — export + nav group (tabs kept right-aligned so they hold
-          position across Production / Timeline / Raw) */}
+      {/* Right — export + nav group */}
       <div className="flex items-center gap-1 justify-end">
         {!isMobile && !isStandalone && (
           <button
@@ -389,13 +422,10 @@ const AppHeader = memo(function AppHeader({
   )
 })
 
-// Left icon rail — far-left vertical nav (Figma). UI-only for now: clicking
-// moves the active highlight but doesn't switch panels yet.
 const RAIL_ITEMS: {
   id: RailItemId
   label: string
   Icon: typeof Film
-  /** Render in the design-system danger red instead of the cyan accent. */
   danger?: boolean
 }[] = [
   { id: 'stock', label: 'Videos', Icon: Film },
@@ -459,8 +489,6 @@ const LeftRail = memo(function LeftRail({
   )
 })
 
-// Aspect-ratio segmented control — floats centered above the preview (Figma),
-// not in the timeline toolbar. Each option shows a glyph shaped like its ratio.
 const ASPECTS = [
   { label: '16:9', w: 1920, h: 1080, gw: 14, gh: 8 },
   { label: '9:16', w: 1080, h: 1920, gw: 8, gh: 14 },
@@ -514,8 +542,6 @@ const AspectControl = memo(function AspectControl() {
   )
 })
 
-// Mobile variant of AspectControl — the Figma's header pill ("▤ 9:16 ⌄").
-// Same engine.setStage mutation, dropdown instead of a segmented row.
 const MobileAspectSelect = memo(function MobileAspectSelect() {
   const engine = useTimelineEngine()
   const stage = useTracksStore((s) => s.stage)
@@ -584,9 +610,6 @@ const MobileAspectSelect = memo(function MobileAspectSelect() {
   )
 })
 
-/** Mobile timecode: MM:SS:FF — three fields instead of the desktop four
- * (hours dropped), so the transport grid centers the play button without
- * the timer running underneath it. */
 function framesToCompactTimecode(frame: number, fps: number): string {
   const totalSec = Math.floor(frame / fps)
   const ff = frame % fps
@@ -595,11 +618,7 @@ function framesToCompactTimecode(frame: number, fps: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}:${String(ff).padStart(2, '0')}`
 }
 
-// Video transport — lives under the Preview (not in the timeline toolbar),
-// matching the Figma. Play/pause, stop, and current | total time (cyan current).
 const TransportBar = memo(function TransportBar() {
-  // The floating preview toggle owns fullscreen on mobile — drop the duplicate.
-  // Undo/redo live here on mobile (per the Figma); on desktop they stay in the header.
   const isMobile = useIsMobile()
   const engine = useTimelineEngine()
   const canUndo = useTracksStore((s) => s.canUndo)
@@ -643,8 +662,6 @@ const TransportBar = memo(function TransportBar() {
     <div
       className={cn(
         'grid grid-cols-[1fr_auto_1fr] items-center h-11 bg-ed-bg-2 border-t border-ed-border shrink-0',
-        // Same centering grid on both; mobile fits because the timecode drops
-        // to three fields (MM:SS:FF) via framesToCompactTimecode.
         isMobile ? 'px-3' : 'px-4',
       )}
     >
@@ -683,7 +700,7 @@ const TransportBar = memo(function TransportBar() {
         </button>
       </div>
 
-      {/* Right — undo/redo on mobile (Figma), preview view controls on desktop. */}
+      {/* Right — undo/redo on mobile, preview view controls on desktop */}
       <div className="flex items-center gap-1.5 justify-end">
         {isMobile ? (
           <>
@@ -716,7 +733,7 @@ const TransportBar = memo(function TransportBar() {
   )
 })
 
-export default function ProductionEditor() {
+export default function ProductionEditor({ project }: { project?: EditorProjectChrome }) {
   const timelineRef = useRef<TimelineRef>(null)
   const demuxerFactoryRef = useRef(createDefaultDemuxerFactory())
 
@@ -728,31 +745,135 @@ export default function ProductionEditor() {
   const [mobileSheet, setMobileSheet] = useState<MobileSheetKind>(null)
   const previewBoxRef = useRef<HTMLDivElement>(null)
 
-  // Resizable timeline: drag the handle up/down to grow/shrink it. Height is
-  // clamped to [MIN, available − reserved] so the editor's top section (panels,
-  // preview, transport) never collapses.
+  // Collapsible side panels
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
+  useEffect(() => {
+    setLeftPanelCollapsed(readEditorPanelCollapsed('left'))
+    setRightPanelCollapsed(readEditorPanelCollapsed('right'))
+  }, [])
+  const toggleLeftPanel = useCallback(() => {
+    setLeftPanelCollapsed((previous) => {
+      const next = !previous
+      writeEditorPanelCollapsed('left', next)
+      return next
+    })
+  }, [])
+  const toggleRightPanel = useCallback(() => {
+    setRightPanelCollapsed((previous) => {
+      const next = !previous
+      writeEditorPanelCollapsed('right', next)
+      return next
+    })
+  }, [])
+
+  // Resizable panels
   const TIMELINE_MIN = 120
   const [timelineHeight, setTimelineHeight] = useState(186)
+  const [isResizingTimeline, setIsResizingTimeline] = useState(false)
+
+  const PANEL_MIN = 240
+  const PANEL_DEFAULT = 280
+  const PANEL_MAX_RESERVE = 480
+  const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT)
+  const [isResizingPanel, setIsResizingPanel] = useState(false)
+
+  const PROPS_PANEL_MIN = 260
+  const PROPS_PANEL_DEFAULT = 300
+  const PROPS_PANEL_MAX_RESERVE = 480
+  const [propertiesPanelWidth, setPropertiesPanelWidth] = useState(PROPS_PANEL_DEFAULT)
+  const [isResizingProperties, setIsResizingProperties] = useState(false)
+
   const workspaceRef = useRef<HTMLDivElement>(null)
+
+  const runResize = useCallback(
+    (
+      cssVar: string,
+      valueAt: (ev: PointerEvent) => number,
+      commit: (value: number) => void,
+      setDragging: (dragging: boolean) => void,
+      cursor: string,
+    ) => {
+      let latest: number | null = null
+      setDragging(true)
+
+      const onMove = (ev: PointerEvent) => {
+        latest = valueAt(ev)
+        workspaceRef.current?.style.setProperty(cssVar, `${latest}px`)
+      }
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        document.body.style.userSelect = ''
+        document.body.style.cursor = ''
+        setDragging(false)
+        if (latest !== null) commit(latest)
+      }
+
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+      document.body.style.userSelect = 'none'
+      document.body.style.cursor = cursor
+    },
+    [],
+  )
 
   const startResize = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
     const startY = e.clientY
     const startH = timelineHeight
     const maxH = (workspaceRef.current?.clientHeight ?? 800) - 140
-    const onMove = (ev: PointerEvent) => {
-      const next = startH + (startY - ev.clientY) // drag up → taller
-      setTimelineHeight(Math.min(Math.max(next, TIMELINE_MIN), Math.max(maxH, TIMELINE_MIN)))
-    }
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      document.body.style.userSelect = ''
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-    document.body.style.userSelect = 'none'
-  }, [timelineHeight])
+    runResize(
+      '--elah-timeline-h',
+      (ev) => {
+        const next = startH + (startY - ev.clientY) // drag up → taller
+        return Math.min(Math.max(next, TIMELINE_MIN), Math.max(maxH, TIMELINE_MIN))
+      },
+      setTimelineHeight,
+      setIsResizingTimeline,
+      'ns-resize',
+    )
+  }, [timelineHeight, runResize])
+
+  const startPanelResize = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = panelWidth
+    const maxW = Math.max(
+      (workspaceRef.current?.clientWidth ?? 1200) - PANEL_MAX_RESERVE,
+      PANEL_MIN,
+    )
+    runResize(
+      '--elah-left-w',
+      (ev) => {
+        const next = startW + (ev.clientX - startX) // drag right → wider
+        return Math.min(Math.max(next, PANEL_MIN), maxW)
+      },
+      setPanelWidth,
+      setIsResizingPanel,
+      'col-resize',
+    )
+  }, [panelWidth, runResize])
+
+  const startPropertiesResize = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = propertiesPanelWidth
+    const maxW = Math.max(
+      (workspaceRef.current?.clientWidth ?? 1200) - panelWidth - PROPS_PANEL_MAX_RESERVE,
+      PROPS_PANEL_MIN,
+    )
+    runResize(
+      '--elah-right-w',
+      (ev) => {
+        const next = startW + (startX - ev.clientX) // drag left → wider
+        return Math.min(Math.max(next, PROPS_PANEL_MIN), maxW)
+      },
+      setPropertiesPanelWidth,
+      setIsResizingProperties,
+      'col-resize',
+    )
+  }, [propertiesPanelWidth, panelWidth, runResize])
 
   const handleExportStart = useCallback(async (opts: {
     videoBitrate: number
@@ -763,9 +884,6 @@ export default function ProductionEditor() {
     onProgress: (frame: number, totalFrames: number) => void
   }) => {
     const e = timelineRef.current?.engine
-    // Returning quietly here resolved the modal's await as success: it closed
-    // with nothing exported and no error shown. Throw so the modal's existing
-    // catch surfaces the failure.
     if (!e) throw new Error('Editor is not ready yet — try again in a moment.')
     usePlaybackStore.getState().pause()
     const project = e.getProject()
@@ -784,8 +902,6 @@ export default function ProductionEditor() {
     a.download = 'export.mp4'
     a.click()
     setTimeout(() => URL.revokeObjectURL(url), 60_000)
-    // `export_completed` is emitted by ExportModal, which owns the whole funnel
-    // and the preset the other two events are derived from.
   }, [])
 
   return (
@@ -795,9 +911,7 @@ export default function ProductionEditor() {
       initialTracks={INITIAL_TRACKS}
       stage={{ width: 1920, height: 1080 }}
     >
-      <div
-        className="elah-root flex flex-col h-full"
-      >
+      <div className="elah-root flex flex-col h-full">
         <AppHeader
           onExport={() => {
             setShowExportModal(true)
@@ -805,7 +919,15 @@ export default function ProductionEditor() {
           }}
           onToggleCode={() => setShowCode((o) => !o)}
           codeOpen={showCode}
+          project={project}
         />
+        {project ? <ProjectDocumentBridge project={project} /> : <LocalProjectBridge />}
+        {project && (
+          <StoryboardComposeBridge projectId={project.id} timelineRef={timelineRef} />
+        )}
+        <ProjectMediaNotice />
+        {project && <ProjectConflictDialog />}
+        {project && <ProjectUnreadableDialog />}
         {showExportModal && (
           <ExportModal
             isMobile={isMobile}
@@ -815,41 +937,136 @@ export default function ProductionEditor() {
         )}
         <ProductionCodePanel open={showCode} onClose={() => setShowCode(false)} />
 
-        <div ref={workspaceRef} className="flex flex-col flex-1 min-h-0">
+        <div
+          ref={workspaceRef}
+          className="flex flex-col flex-1 min-h-0"
+          style={
+            {
+              '--elah-left-w': `${panelWidth}px`,
+              '--elah-right-w': `${propertiesPanelWidth}px`,
+              '--elah-timeline-h': `${timelineHeight}px`,
+            } as CSSProperties
+          }
+        >
+          {/* Top section: Panels + Preview + Properties */}
           <div className="flex flex-1 min-h-0">
-            {!isMobile && <LeftRail active={activePanel} onSelect={setActivePanel} />}
             {!isMobile && (
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  width: 240,
-                  flexShrink: 0,
-                  borderRight: '1px solid var(--elah-border)',
-                  background: 'var(--elah-bg-panel)',
-                  minHeight: 0,
-                  overflow: 'hidden',
+              <LeftRail
+                active={activePanel}
+                onSelect={(id) => {
+                  setActivePanel(id)
+                  if (leftPanelCollapsed) toggleLeftPanel()
                 }}
-              >
-                {/* Old SDK panel — kept commented for comparison, discard later. */}
-                {/* <SourcePanel style={{ flex: 1, minHeight: 0 }} /> */}
-                {activePanel === 'elements' ? (
-                  <ElementsPanel style={{ flex: 1, minHeight: 0 }} />
-                ) : activePanel === 'agentic' ? (
-                  <AgenticPanel
-                    style={{ flex: 1, minHeight: 0 }}
-                    timelineRef={timelineRef}
-                    busy={loadingPixabay}
-                    setBusy={setLoadingPixabay}
+              />
+            )}
+            {!isMobile && (
+              <>
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    width: leftPanelCollapsed ? 0 : 'var(--elah-left-w)',
+                    flexShrink: 0,
+                    background: 'var(--elah-bg-panel)',
+                    minHeight: 0,
+                    overflow: 'hidden',
+                  }}
+                  className={cn(!isResizingPanel && 'transition-[width] duration-200')}
+                >
+                  <div
+                    style={{
+                      width: 'var(--elah-left-w)',
+                      flex: 1,
+                      minHeight: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                    }}
+                  >
+                    {activePanel === 'elements' ? (
+                      <ElementsPanel style={{ flex: 1, minHeight: 0 }} />
+                    ) : activePanel === 'agentic' ? (
+                      <AgenticPanel
+                        style={{ flex: 1, minHeight: 0 }}
+                        timelineRef={timelineRef}
+                        busy={loadingPixabay}
+                        setBusy={setLoadingPixabay}
+                      />
+                    ) : (
+                      <MediaPanel mode={activePanel as PanelMode} style={{ flex: 1, minHeight: 0 }} />
+                    )}
+                  </div>
+                </div>
+
+                {/* Drag handle for left panel */}
+                <div
+                  onPointerDown={startPanelResize}
+                  role="separator"
+                  aria-orientation="vertical"
+                  title="Drag to resize panel"
+                  className={cn(
+                    'group relative shrink-0 w-[5px] -mr-[2px] flex items-center justify-center cursor-col-resize',
+                    leftPanelCollapsed && 'hidden',
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'pointer-events-none h-full w-px transition-colors',
+                      isResizingPanel
+                        ? 'bg-ed-accent'
+                        : 'bg-ed-border group-hover:bg-ed-accent',
+                    )}
                   />
-                ) : (
-                  <MediaPanel mode={activePanel as PanelMode} style={{ flex: 1, minHeight: 0 }} />
-                )}
-              </div>
+                  <span
+                    className={cn(
+                      'pointer-events-none absolute flex h-7 w-[13px] items-center justify-center',
+                      'rounded-full border bg-ed-elevated transition-colors',
+                      isResizingPanel
+                        ? 'border-ed-accent text-ed-accent'
+                        : 'border-ed-border text-ed-text-muted group-hover:border-ed-accent group-hover:text-ed-accent',
+                    )}
+                  >
+                    <GripVertical size={11} />
+                  </span>
+                </div>
+              </>
             )}
 
             <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-black">
-              {!isMobile && <AspectControl />}
+              {!isMobile && (
+                <div className="relative shrink-0">
+                  <AspectControl />
+                  <button
+                    type="button"
+                    onClick={toggleLeftPanel}
+                    title={editorPanelToggleLabel('left', leftPanelCollapsed)}
+                    aria-label={editorPanelToggleLabel('left', leftPanelCollapsed)}
+                    aria-expanded={!leftPanelCollapsed}
+                    data-testid="editor-left-panel-toggle"
+                    className="absolute left-2 top-1/2 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-lg text-ed-text-muted transition-colors hover:bg-ed-elevated hover:text-ed-text cursor-pointer"
+                  >
+                    {leftPanelCollapsed ? (
+                      <PanelLeftOpen size={16} aria-hidden />
+                    ) : (
+                      <PanelLeftClose size={16} aria-hidden />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={toggleRightPanel}
+                    title={editorPanelToggleLabel('right', rightPanelCollapsed)}
+                    aria-label={editorPanelToggleLabel('right', rightPanelCollapsed)}
+                    aria-expanded={!rightPanelCollapsed}
+                    data-testid="editor-right-panel-toggle"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-lg text-ed-text-muted transition-colors hover:bg-ed-elevated hover:text-ed-text cursor-pointer"
+                  >
+                    {rightPanelCollapsed ? (
+                      <PanelRightOpen size={16} aria-hidden />
+                    ) : (
+                      <PanelRightClose size={16} aria-hidden />
+                    )}
+                  </button>
+                </div>
+              )}
               <div
                 ref={previewBoxRef}
                 className={cn('flex-1 min-h-0 relative bg-black', isMobile ? 'py-2' : 'py-6')}
@@ -864,24 +1081,100 @@ export default function ProductionEditor() {
               <TransportBar />
             </div>
 
-            {!isMobile && <ClipProperties />}
+            {!isMobile && (
+              <>
+                {/* Drag handle for Properties column */}
+                <div
+                  onPointerDown={startPropertiesResize}
+                  role="separator"
+                  aria-orientation="vertical"
+                  title="Drag to resize Properties"
+                  className={cn(
+                    'group relative shrink-0 w-[5px] -ml-[2px] flex items-center justify-center cursor-col-resize',
+                    rightPanelCollapsed && 'hidden',
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'pointer-events-none h-full w-px transition-colors',
+                      isResizingProperties
+                        ? 'bg-ed-accent'
+                        : 'bg-ed-border group-hover:bg-ed-accent',
+                    )}
+                  />
+                  <span
+                    className={cn(
+                      'pointer-events-none absolute flex h-7 w-[13px] items-center justify-center',
+                      'rounded-full border bg-ed-elevated transition-colors',
+                      isResizingProperties
+                        ? 'border-ed-accent text-ed-accent'
+                        : 'border-ed-border text-ed-text-muted group-hover:border-ed-accent group-hover:text-ed-accent',
+                    )}
+                  >
+                    <GripVertical size={11} />
+                  </span>
+                </div>
+
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    width: rightPanelCollapsed ? 0 : 'var(--elah-right-w)',
+                    flexShrink: 0,
+                    minHeight: 0,
+                    overflow: 'hidden',
+                  }}
+                  className={cn(!isResizingProperties && 'transition-[width] duration-200')}
+                >
+                  <div
+                    style={{
+                      width: 'var(--elah-right-w)',
+                      flex: 1,
+                      minHeight: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                    }}
+                    className="[&>div]:w-full [&>div]:h-full [&>div]:border-l-0"
+                  >
+                    <ClipProperties />
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
-          {/* Drag handle — desktop only; resize the timeline vertically. The top
-              section (panels, preview, transport) flexes to fill the remaining
-              space. On mobile the timeline is a fixed height instead. */}
+          {/* Drag handle for timeline */}
           {!isMobile && (
             <div
               onPointerDown={startResize}
               role="separator"
               aria-orientation="horizontal"
               title="Drag to resize timeline"
-              className="group shrink-0 h-3 flex items-center justify-center cursor-ns-resize bg-ed-elevated border-t border-ed-border hover:bg-ed-highest transition-colors"
+              className="group relative shrink-0 h-[5px] -mb-[2px] flex items-center justify-center cursor-ns-resize"
             >
-              <span className="h-1 w-12 rounded-full bg-ed-text-muted group-hover:bg-ed-accent transition-colors" />
+              <span
+                className={cn(
+                  'pointer-events-none w-full h-px transition-colors',
+                  isResizingTimeline
+                    ? 'bg-ed-accent'
+                    : 'bg-ed-border group-hover:bg-ed-accent',
+                )}
+              />
+              <span
+                className={cn(
+                  'pointer-events-none absolute flex w-7 h-[13px] items-center justify-center',
+                  'rounded-full border bg-ed-elevated transition-colors',
+                  isResizingTimeline
+                    ? 'border-ed-accent text-ed-accent'
+                    : 'border-ed-border text-ed-text-muted group-hover:border-ed-accent group-hover:text-ed-accent',
+                )}
+              >
+                <GripHorizontal size={11} />
+              </span>
             </div>
           )}
 
+          {/* Timeline container — runs horizontally across the full width */}
           <div className="relative flex flex-col min-h-0 shrink-0">
             <TimelineControls timelineRef={timelineRef} compact={isMobile} />
 
@@ -890,7 +1183,11 @@ export default function ProductionEditor() {
               fps={FPS}
               sidebarWidth={isMobile ? 48 : undefined}
               compactSidebar={isMobile}
-              style={{ height: isMobile ? 158 : timelineHeight, flexShrink: 0, minWidth: 0 }}
+              style={{
+                height: isMobile ? 158 : 'var(--elah-timeline-h)',
+                flexShrink: 0,
+                minWidth: 0,
+              }}
             />
 
             {loadingPixabay && (
@@ -931,8 +1228,6 @@ export default function ProductionEditor() {
                 setBusy={setLoadingPixabay}
               />
             ) : mobileSheet === 'properties' ? (
-              /* Child selector outranks the panel's fixed desktop width (PANEL
-                 w-[300px]) by specificity, so stylesheet order can't flip it. */
               <div className="min-h-0 overflow-y-auto [&>div]:w-full [&>div]:border-l-0">
                 <ClipProperties />
               </div>
@@ -946,8 +1241,6 @@ export default function ProductionEditor() {
   )
 }
 
-/** Mobile bottom bar — the Figma's tool row, repurposed as sourcing-panel and
- * properties triggers (Filter/FX/etc. have no engine features behind them). */
 const MobileToolbar = memo(function MobileToolbar({
   onOpenSheet,
 }: {

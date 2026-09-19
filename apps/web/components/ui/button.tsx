@@ -1,66 +1,33 @@
-import { cn } from '@/lib/utils'
-import Link from 'next/link'
+'use client'
 
-interface ButtonProps {
-  variant?: 'primary' | 'ghost' | 'link'
-  size?: 'sm' | 'md' | 'lg'
-  href?: string
-  external?: boolean
-  children?: React.ReactNode
-  className?: string
-  onClick?: () => void
-  disabled?: boolean
-  type?: 'button' | 'submit' | 'reset'
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { buttonClass, type ButtonSize, type ButtonVariant } from '@/lib/ui/styles'
+import { Spinner } from './Spinner'
+
+export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: ButtonVariant
+  size?: ButtonSize
+  loading?: boolean
+  icon?: ReactNode
 }
 
-const variantStyles = {
-  primary:
-    'bg-primary text-on-primary hover:bg-primary-hover border-transparent',
-  ghost:
-    'bg-transparent text-on-surface border-outline-variant hover:bg-surface-container hover:text-on-surface',
-  link: 'bg-transparent text-primary border-transparent hover:underline px-0',
-}
-
-const sizeStyles = {
-  sm: 'px-3 py-1.5 text-xs gap-1.5',
-  md: 'px-4 py-2 text-sm gap-2',
-  lg: 'px-5 py-2.5 text-sm gap-2',
-}
-
-export function Button({
-  variant = 'ghost',
-  size = 'md',
-  href,
-  external,
-  children,
-  className,
-  onClick,
-  disabled,
-  type = 'button',
-}: ButtonProps) {
-  const classes = cn(
-    'inline-flex items-center justify-center rounded border font-medium transition-colors cursor-pointer select-none',
-    variantStyles[variant],
-    sizeStyles[size],
-    disabled && 'opacity-50 cursor-not-allowed',
-    className
-  )
-
-  if (href) {
-    return (
-      <Link
-        href={href}
-        className={classes}
-        {...(external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
-      >
-        {children as React.ReactNode}
-      </Link>
-    )
-  }
-
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  { variant = 'primary', size = 'md', loading = false, icon, disabled, className, children, type, ...props },
+  ref,
+) {
   return (
-    <button className={classes} onClick={onClick} disabled={disabled} type={type}>
+    <button
+      ref={ref}
+      type={type ?? 'button'}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
+      className={buttonClass(variant, size, className)}
+      {...props}
+    >
+      {loading ? <Spinner /> : icon}
       {children}
     </button>
   )
-}
+})
+
+export default Button

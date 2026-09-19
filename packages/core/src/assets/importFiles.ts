@@ -1,8 +1,8 @@
 import { generateId } from '../utils/id'
 import { mediaLibraryStore } from './store'
-import { defaultAudioResolver, type AudioResolver } from '../media/audio/audioResolver'
 import { determineAssetHasAudio, hasAudioDetermined } from './hasAudio'
-import type { MediaAsset, MediaKind } from './types'
+import { defaultAudioResolver, type AudioResolver } from '../media/audio/audioResolver'
+import type { MediaAsset, MediaAssetAnalysis, MediaKind } from './types'
 
 export interface ImportFilesOptions {
   /** Reserved for clip creation when source fps is unknown. Not used during import. */
@@ -16,6 +16,12 @@ export interface ImportUrlOptions extends ImportFilesOptions {
   name?: string
   /** Override the media kind instead of inferring it from the URL/content-type. */
   kind?: MediaKind
+  /**
+   * AI content analysis to carry over onto the created asset, when importing
+   * from a gallery item whose analysis has already completed. See
+   * `MediaAsset.analysis`.
+   */
+  analysis?: MediaAssetAnalysis
 }
 
 export interface ImportBlobOptions extends ImportFilesOptions {
@@ -51,6 +57,8 @@ const THUMBNAIL_STRIP_COUNT = 4
 const THUMBNAIL_STRIP_MAX_DIM = 160
 /** Number of normalized peaks stored per audio source. */
 const WAVEFORM_PEAK_COUNT = 256
+
+const PENDING_FALLBACK_DURATION_SEC = 5
 
 /**
  * Best-effort, synchronous-at-metadata check for an audio track on a video
@@ -738,6 +746,82 @@ export async function importUrl(url: string, opts?: ImportUrlOptions): Promise<M
     lastModified: Date.now(),
     thumbnailMaxDim: opts?.thumbnailMaxDim ?? DEFAULT_THUMBNAIL_MAX_DIM,
   })
+}
+
+/**
+ * Like {@link importUrl}, but returns a `status: 'pending'` asset immediately
+ * instead of awaiting metadata — for callers (e.g. "add to timeline" from a
+ * remote gallery) that want to place a clip right away and let it resize
+ * itself once the real duration/dimensions arrive, rather than blocking on
+ * CDN latency. `opts.dimensions`, if known upfront (e.g. from a backend
+ * response), seeds `width`/`height` so the placeholder's aspect ratio is
+ * already correct.
+ *
+ * Callers that need the resolved metadata should use `importUrl` instead —
+ * this one only guarantees `id`/`kind`/`src` are final; everything else may
+ * still change (see the store update once `status` flips to `'ready'`).
+ */
+export async function beginImportUrl(
+  url: string,
+  opts?: ImportUrlOptions & { dimensions?: { width: number; height: number } },
+): Promise<MediaAsset> {
+  const existing = Object.values(mediaLibraryStore.getState().assets).find(
+    (asset) => asset.src === url,
+  )
+  if (existing) return existing
+
+  const kind = opts?.kind ?? inferKindFromUrl(url) ?? (await inferKindFromHead(url))
+  if (!kind) {
+    throw new Error(`[beginImportUrl] Could not determine media kind for "${url}"`)
+  }
+
+  const asset: MediaAsset = {
+    id: generateId(),
+    kind,
+    name: opts?.name ?? deriveNameFromUrl(url),
+    src: url,
+    durationSec: kind === 'image' ? 0 : PENDING_FALLBACK_DURATION_SEC,
+    width: opts?.dimensions?.width,
+    height: opts?.dimensions?.height,
+    ...(kind === 'video' ? { hasAudio: false } : {}),
+    byteSize: 0,
+    lastModified: Date.now(),
+    addedAt: Date.now(),
+    status: 'pending',
+    ...(opts?.analysis ? { analysis: opts.analysis } : {}),
+  }
+
+  mediaLibraryStore.getState().addAsset(asset)
+
+  // Runs in parallel with the metadata probe below, not after it: callers that
+  // import and insert in the same click (gallery "add to editor") would
+  // otherwise decide the video/audio split against the `hasAudio: false` seed
+  // above and drop a video with sound as video-only.
+  if (kind === 'video') void determineAssetHasAudio(asset.id)
+
+  const thumbnailMaxDim = opts?.thumbnailMaxDim ?? DEFAULT_THUMBNAIL_MAX_DIM
+  void probeMetadata(kind, url)
+    .then((metadata) => {
+      // `hasAudio` is deliberately absent — the container probe above owns it,
+      // and `metadata.hasAudio` is the guess that would clobber a real answer.
+      mediaLibraryStore.getState().updateAsset(asset.id, {
+        durationSec: metadata.durationSec,
+        width: metadata.width ?? asset.width,
+        height: metadata.height ?? asset.height,
+        status: 'ready',
+      })
+      const ready = mediaLibraryStore.getState().getAsset(asset.id)
+      if (ready) {
+        scheduleThumbnail(ready, thumbnailMaxDim)
+        scheduleAudioAnalysis(ready)
+      }
+    })
+    .catch((err) => {
+      console.warn(`[beginImportUrl] Metadata probe failed for "${asset.name}":`, err)
+      mediaLibraryStore.getState().updateAsset(asset.id, { status: 'ready' })
+    })
+
+  return asset
 }
 
 /**
