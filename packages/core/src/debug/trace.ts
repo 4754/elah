@@ -34,6 +34,8 @@ export type TraceChannel =
   | 'DRAW' // WebGL drawArrays()
   // ── Audio pipeline ────────────────────────────────────────────────────────
   | 'AUDIO' // AudioContext lifecycle: resume, unlock, errors
+  // ── Performance ───────────────────────────────────────────────────────────
+  | 'PERF' // once-a-second render-loop summary: tick cost, long frames, store churn
   // ── Export pipeline (ExportWorker + exportVideo, runs in a Worker) ────────
   | 'EXPORT' // high-level lifecycle: start, clip inventory, done
   | 'EXPORT_ASSETS' // video CanvasSinks + image ImageBitmaps loading
@@ -52,6 +54,7 @@ const ALL_CHANNELS: TraceChannel[] = [
   'UPLOAD',
   'DRAW',
   'AUDIO',
+  'PERF',
   'EXPORT',
   'EXPORT_ASSETS',
   'EXPORT_AUDIO',

@@ -5,9 +5,9 @@ import {
   useRef,
   type CSSProperties,
 } from 'react'
-import { GpuRenderer } from '@elah/core'
+import { GpuRenderer, PerfSummary } from '@elah/core'
 import { resolveTimeline } from '@elah/core'
-import { useTimelineEngine, usePlaybackEngine, useMediaLibraryStore } from '@elah/react'
+import { useTimelineEngine, usePlaybackEngine, useMediaLibraryStore, usePlaybackStore } from '@elah/react'
 import type { DemuxerFactory } from '@elah/core'
 import { AudioPlaybackController, preloadProjectImages, warmImageSrc, warmVideoSrc } from '@elah/core'
 import type { AudioResolver } from '@elah/core'
@@ -174,20 +174,39 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
     // pushing the upcoming clips' playhead lets their decoders warm up first.
     // ~1s at 30fps comfortably covers a cold WebCodecs open + keyframe seek.
     const PREWARM_HORIZON_FRAMES = 30
+
+    // Silent until `__trace.on('PERF')`; see PerfSummary. Counts store
+    // notifications alongside the tick cost, because a store that notifies on
+    // every frame is the difference between a loop that is busy and one that is
+    // dragging React along behind it.
+    const perf = new PerfSummary()
+    const unsubPerfPlayback = usePlaybackStore.subscribe(() => perf.count('playbackNotify'))
+    const countTracks = () => perf.count('engineChange')
+    engine.on('change', countTracks)
+
     const tick = () => {
+      rafId = requestAnimationFrame(tick)
+
+      const now = performance.now()
       const frame = Math.floor(playback.getFrameAt())
       const project = engine.getProject()
-      const scene = resolveTimeline(frame, project)
+      const scene = perf.measure('resolve', () => resolveTimeline(frame, project))
       // Capture snapshot before render — canvas still holds the previous frame.
       const canvas = renderer.getCanvas()
       if (canvas) transitionOverlayRef.current?.captureIfNewTransition(scene, canvas)
-      renderer.render(scene)
+      perf.measure('render', () => renderer.render(scene))
       transitionOverlayRef.current?.update(scene)
       // Warm decoders for clips that will become active within the horizon so
       // image→video (and any cold) boundaries paint instantly instead of freezing.
-      const prewarmScene = resolveTimeline(frame + PREWARM_HORIZON_FRAMES, project)
-      renderer.prewarm(prewarmScene)
-      rafId = requestAnimationFrame(tick)
+      perf.measure('prewarm', () => {
+        const prewarmScene = resolveTimeline(frame + PREWARM_HORIZON_FRAMES, project)
+        renderer.prewarm(prewarmScene)
+      })
+
+      // Measures the whole tick, not just the GPU: the complaint this exists to
+      // settle is about the editor feeling slow, and the renderer's own FPS
+      // counter cannot see the main-thread work competing with it.
+      perf.endTick(performance.now() - now, { fps: renderer.fps })
     }
     rafId = requestAnimationFrame(tick)
 
@@ -196,6 +215,8 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
       observer.disconnect()
       if (warmAudio) engine.off('change', warmAudio)
       engine.off('change', warmImages)
+      unsubPerfPlayback()
+      engine.off('change', countTracks)
       unsubMediaLibrary()
       audio?.destroy()
       renderer.dispose()

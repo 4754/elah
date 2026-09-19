@@ -238,6 +238,7 @@ export type { ExportOptions, ExportProgress, ExportVideoCodec, ExportAudioCodec 
 
 // --- Debug/trace ---
 export { installTraceGlobal, trace } from './debug/trace'
+export { PerfSummary } from './debug/PerfSummary'
 
 // --- Frame sequences (ordered image sets: 360° orbits, generated sets, storyboards) ---
 export {
