@@ -19,6 +19,9 @@ export type {
   Transform,
   TextAnimation,
   TextAnimationKind,
+  TextAnimationKindOption,
+  TextAnimationEasing,
+  MotionSpec,
   TextStylePreset,
   ClipType,
   TrackKind,
@@ -137,6 +140,11 @@ export type {
   CreateFreehandClipOptions,
   ShapeClipMetadata,
   FreehandClipMetadata,
+} from '@elah/core'
+
+export {
+  TEXT_ANIMATION_KINDS,
+  DEFAULT_TEXT_TRANSFORM,
 } from '@elah/core'
 
 export { splitClipAtPlayhead } from '@elah/core'

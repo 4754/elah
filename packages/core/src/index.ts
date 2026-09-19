@@ -13,6 +13,8 @@ export type {
   Transform,
   TextAnimation,
   TextAnimationKind,
+  TextAnimationEasing,
+  MotionSpec,
   ClipType,
   ShapeVariant,
   TrackKind,
@@ -46,6 +48,24 @@ export type {
   ActiveFreehandClip,
   ActiveClipBase,
 } from './resolver/scene'
+
+// --- Entry/exit animations (pure; consumed by the resolver + UI pickers) ---
+export {
+  sampleTextAnimation,
+  resolveRampFrames,
+  TEXT_ANIMATION_KINDS,
+  TEXT_ANIMATION_EASINGS,
+  motionForKind,
+  DEFAULT_TEXT_TRANSFORM,
+  DEFAULT_SHAPE_TRANSFORM,
+  SLIDE_TRAVEL_NORMALIZED,
+  SPIN_TRAVEL_RADIANS,
+} from './resolver/textAnimation'
+export type {
+  TextAnimationSample,
+  SampleTextAnimationArgs,
+  TextAnimationKindOption,
+} from './resolver/textAnimation'
 
 // --- Renderer interface ---
 export type { Renderer } from './renderer/types'
