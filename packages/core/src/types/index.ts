@@ -235,6 +235,17 @@ export interface Clip {
   volume?: number   // 0 – 1
   opacity?: number  // 0 – 1
   /**
+   * Playback speed multiplier for VIDEO clips only (audio clips on this
+   * timeline are stripped of audio, so no time-stretch is needed). 1 = normal
+   * speed (default when omitted). Clamped to [0.25, 4] by TimelineEngine's
+   * setClipSpeed(). Changing it recomputes `durationFrames` so the clip's
+   * on-timeline length reflects the new speed while `sourceStartFrame` /
+   * `sourceDurationFrames` continue to describe the trim window into the
+   * source asset at 1x. See resolveTimeline.ts for how this maps timeline
+   * frames to source frames, and ExportWorker.ts for how export honors it.
+   */
+  speed?: number
+  /**
    * Rounded-corner mask for video/image clips, as a fraction 0..0.5 of the
    * *shorter* rendered side. 0 (or omitted) = square corners; 0.5 = a full
    * ellipse, which on a square draw rect is a circle.
