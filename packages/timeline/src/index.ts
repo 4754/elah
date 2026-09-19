@@ -18,13 +18,18 @@ export { usePlayback } from './hooks/usePlayback'
 export { useSelection } from './hooks/useSelection'
 export { useTimelineDrop } from './useTimelineDrop'
 export type { TimelineDropState } from './useTimelineDrop'
-export { insertMediaAsset, insertElement } from './insertAsset'
+export { insertMediaAsset, insertElement, growClipToAssetDuration } from './insertAsset'
 export type {
   InsertAssetOptions,
   InsertAssetResult,
   InsertAssetFailureReason,
   InsertedKind,
 } from './insertAsset'
+
+// --- AI-tools dialog (opened from the Sparkles button on a track label) ---
+export { useAiTrackDialogStore } from './aiTrackDialog.store'
+export type { AiTrackDialogStatus } from './aiTrackDialog.store'
+export { GenerationProgressBar } from './GenerationProgressBar'
 
 // --- Element drag infrastructure (public API) ---
 export { ELEMENT_DRAG_MIME } from './elementDrag'

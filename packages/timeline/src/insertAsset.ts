@@ -5,17 +5,18 @@ import type {
   MediaKind,
   TimelineEngine,
   Track,
-  TrackKind,
 } from '@elah/core'
 import {
   clipsOverlap,
   determineAssetHasAudio,
-  mediaLibraryStore,
-  playbackStore,
   secondsToFrames,
 } from '@elah/core'
+import { useMediaLibraryStore, usePlaybackStore } from '@elah/react'
 import { useAudioDropDialogStore } from './audioDropDialog.store'
 import type { DragElementPayload } from './elementDrag'
+import { isCompatibleTrackKind } from './trackCompat'
+
+export { isCompatibleTrackKind }
 
 /** Default on-timeline length for a freshly inserted synthetic element, in seconds. */
 const DEFAULT_TEXT_DURATION_SEC = 3
@@ -135,15 +136,8 @@ function mediaKindToClipType(kind: MediaKind): MediaClipType {
   return kind
 }
 
-/** Whether a media asset can be placed on a track of the given kind. */
-export function isCompatibleTrackKind(trackKind: TrackKind, mediaKind: MediaKind): boolean {
-  if (trackKind === 'audio') return mediaKind === 'audio'
-  if (trackKind === 'video') return mediaKind === 'video' || mediaKind === 'image'
-  return false
-}
-
 function currentDesiredStart(opts: InsertAssetOptions | undefined): number {
-  return opts?.desiredStartFrame ?? playbackStore.getState().currentFrame
+  return opts?.desiredStartFrame ?? usePlaybackStore.getState().currentFrame
 }
 
 function getProjectTracks(engine: TimelineEngine): Track[] {
@@ -376,7 +370,7 @@ export async function insertMediaAsset(
   assetId: string,
   opts: InsertAssetOptions = {},
 ): Promise<InsertAssetResult> {
-  const asset = mediaLibraryStore.getState().getAsset(assetId)
+  const asset = useMediaLibraryStore.getState().getAsset(assetId)
   if (!asset) return mediaRefusal('video', 'missing-asset')
 
   const target = resolveMediaTarget(engine, asset.kind, opts.targetTrackId)
@@ -476,6 +470,7 @@ export async function insertMediaAsset(
   return result
 }
 
+
 /**
  * Insert a generated element from the published element drag payload. Keeping
  * the templates here means drag-drop and tap insertion always create identical
@@ -511,4 +506,45 @@ export function insertElement(
     result = run()
   }, 'Add element')
   return result
+}
+
+/**
+ * Grow (or shrink) a clip to match its asset's now-known real duration, once
+ * a pending remote import (see `beginImportUrl`) finishes probing. Used so a
+ * placeholder clip inserted with a fallback duration ends up the same width
+ * it would have had if the real duration had been known at insert time.
+ *
+ * Only ever resizes up to the gap before the next clip on the same track —
+ * same rule `resolveDropPosition` applies on insert — so this never creates
+ * a new overlap. If the clip was already trimmed by the user (its duration no
+ * longer matches the fallback this function was seeded with), it's left
+ * alone.
+ */
+export function growClipToAssetDuration(
+  engine: TimelineEngine,
+  clipId: string,
+  expectedFallbackFrames: number,
+  newDurationSec: number,
+): void {
+  const found = engine.findClip(clipId)
+  if (!found) return
+  const { clip, trackId } = found
+  if (clip.durationFrames !== expectedFallbackFrames) return // user already trimmed it
+
+  const fps = engine.getProject().fps
+  const desiredFrames = Math.max(1, secondsToFrames(newDurationSec, fps))
+  if (desiredFrames === clip.durationFrames) return
+
+  const siblings = clipsOn(engine, trackId).filter((c) => c.id !== clipId)
+  const nextClip = siblings
+    .filter((c) => c.startFrame >= clip.startFrame)
+    .sort((a, b) => a.startFrame - b.startFrame)[0]
+  const available = nextClip ? nextClip.startFrame - clip.startFrame : Infinity
+  const durationFrames = Math.max(1, Math.min(desiredFrames, available))
+
+  if (durationFrames === clip.durationFrames) return
+  engine.updateClip(clipId, trackId, {
+    durationFrames,
+    sourceDurationFrames: durationFrames,
+  })
 }

@@ -1,4 +1,5 @@
 import {
+  Fragment,
   forwardRef,
   memo,
   useCallback,
@@ -21,15 +22,11 @@ import { Ruler } from './Ruler'
 import { Playhead } from './Playhead'
 import { TrackRow } from './TrackRow'
 import { AudioDropDialog } from './AudioDropDialog'
+import { AiTrackDialog } from './AiTrackDialog'
 import { cn } from './cn'
+import { timelineContentWidth } from './contentWidth'
+import { computeAnchoredScrollLeft, resolveZoomAnchorX, wheelZoomStep } from './zoomAnchor'
 import type { TimelineClassNames } from './classNames'
-import {
-  VisibleWindowContext,
-  SHOW_ALL_WINDOW,
-  computeVisibleWindow,
-  QUANTUM_PX,
-  type VisibleWindow,
-} from './visible-window'
 
 export interface TimelineRef {
   engine: TimelineEngine
@@ -39,6 +36,13 @@ export interface TimelineRef {
    * long clips that overflow far past the viewport. No-op until mounted.
    */
   fitToWindow: () => void
+  /**
+   * Set the zoom (px/frame, store-clamped) while keeping the view anchored:
+   * the playhead stays put when it is visible, otherwise the viewport center
+   * does. Use this instead of raw setZoom so zooming never scrolls the
+   * playhead out of view.
+   */
+  zoomAtAnchor: (nextZoom: number) => void
 }
 
 /** Width of the track-label sidebar; the clip lanes begin after it. */
@@ -94,6 +98,16 @@ export interface TimelineProps {
    * controls are hidden; pair with a small `sidebarWidth`.
    */
   compactSidebar?: boolean
+  /**
+   * Extra content rendered as its own row within the scrollable track area,
+   * right after the track identified by `trackSlotAfterTrackId` (or after the
+   * last track if that id isn't found / is omitted). Lets the host app pin an
+   * action — e.g. a "Generate subtitles" launcher — beneath a specific lane
+   * without the package knowing anything about what that action does.
+   */
+  trackSlot?: React.ReactNode
+  /** See `trackSlot`. */
+  trackSlotAfterTrackId?: string | null
 }
 
 /**
@@ -115,19 +129,35 @@ export interface TimelineProps {
  */
 export const Timeline = memo(
   forwardRef<TimelineRef, TimelineProps>(function Timeline(
-    { fps = 30, className, style, classNames, sidebarWidth = SIDEBAR_WIDTH, compactSidebar = false },
+    {
+      fps = 30,
+      className,
+      style,
+      classNames,
+      sidebarWidth = SIDEBAR_WIDTH,
+      compactSidebar = false,
+      trackSlot,
+      trackSlotAfterTrackId,
+    },
     ref,
   ) {
     const { engine, playback } = useEditor()
 
+    const rootRef = useRef<HTMLDivElement>(null)
     const scrollRef = useRef<HTMLDivElement>(null)
     const rulerWrapRef = useRef<HTMLDivElement>(null)
     const clipboardRef = useRef<Clip[]>([])
 
+    // Anchored zoom: scrollLeft correction computed at zoom time, applied
+    // AFTER React re-lays out the lanes at the new width. Writing scrollLeft
+    // synchronously would clamp against the OLD scrollWidth when zooming in,
+    // making the anchor slip on large steps.
+    const pendingScrollLeftRef = useRef<number | null>(null)
+
     // Cached container width — the scroll handler reads this instead of
     // clientWidth so it never forces a reflow on every scroll event.
     const containerWidthRef = useRef(0)
-    const [visibleWindow, setVisibleWindow] = useState<VisibleWindow>(SHOW_ALL_WINDOW)
+    const [visibleWindow, setVisibleWindow] = useState({ start: 0, end: Infinity })
 
     // Fit the entire timeline into the visible lane width. Falls back to a
     // 10-second baseline (matching the ruler) when the timeline is empty.
@@ -141,17 +171,41 @@ export const Timeline = memo(
       usePlaybackStore.getState().setZoom(available / frames)
     }, [fps, sidebarWidth])
 
-    useImperativeHandle(
-      ref,
-      () => ({ engine, playback, fitToWindow }),
-      [engine, playback, fitToWindow],
-    )
+    /**
+     * Change zoom while keeping the frame at lane-x `anchorX` (px from the
+     * lane's left viewport edge, i.e. after the sidebar) visually fixed.
+     * The formula matches the pinch handler's; the scroll correction is
+     * deferred to the layout effect below.
+     */
+    const applyAnchoredZoom = useCallback((anchorX: number, nextZoomTarget: number) => {
+      const el = scrollRef.current
+      if (!el) return
+      const prevZoom = usePlaybackStore.getState().zoom
+      usePlaybackStore.getState().setZoom(nextZoomTarget)
+      const nextZoom = usePlaybackStore.getState().zoom // store-clamped
+      if (nextZoom === prevZoom) return
+      pendingScrollLeftRef.current = computeAnchoredScrollLeft(
+        prevZoom,
+        nextZoom,
+        el.scrollLeft,
+        anchorX,
+      )
+    }, [])
 
-    const tracks = useTracksStore((s) => s.tracks)
-    const totalFrames = useTracksStore((s) => s.totalFrames)
-    const zoom = usePlaybackStore((s) => s.zoom)
-    const setZoom = usePlaybackStore((s) => s.setZoom)
-    const setCurrentFrame = usePlaybackStore((s) => s.setCurrentFrame)
+    // Zoom anchored on the playhead when it's in view, else the viewport
+    // center. Backs the imperative handle used by toolbar buttons/slider and
+    // editor-wide ctrl+scroll forwarding.
+    const zoomAtAnchor = useCallback(
+      (nextZoom: number) => {
+        const el = scrollRef.current
+        if (!el) return
+        const { zoom: prevZoom, currentFrame } = usePlaybackStore.getState()
+        const laneWidth = el.clientWidth - sidebarWidth
+        const anchorX = resolveZoomAnchorX(currentFrame, prevZoom, el.scrollLeft, laneWidth)
+        applyAnchoredZoom(anchorX, nextZoom)
+      },
+      [applyAnchoredZoom, sidebarWidth],
+    )
 
     // Mirror horizontal scroll of the track area into the ruler wrapper so they
     // always stay in sync. The ruler wrapper is overflow:hidden (no visible bar).
@@ -161,74 +215,57 @@ export const Timeline = memo(
       }
     }, [])
 
-    // Recomputes the virtualization window from the cached width + current
-    // scrollLeft. Bails the setState when both bounds are unchanged so the
-    // VisibleWindowContext value (and its subscriber re-renders) stay quantized
-    // to QUANTUM_PX steps instead of firing every scroll frame.
-    const updateWindow = useCallback(() => {
+    // Apply the deferred scroll correction once the lanes have re-rendered at
+    // the new zoom (layout effect runs before paint — no visible flicker).
+    useLayoutEffect(() => {
+      const pending = pendingScrollLeftRef.current
+      if (pending === null) return
+      pendingScrollLeftRef.current = null
       const el = scrollRef.current
       if (!el) return
-      const next = computeVisibleWindow(
-        el.scrollLeft,
-        containerWidthRef.current,
-        sidebarWidth,
-        QUANTUM_PX,
-      )
-      setVisibleWindow((prev) =>
-        prev.start === next.start && prev.end === next.end ? prev : next,
-      )
-    }, [sidebarWidth])
-
-    const handleTrackAreaScroll = useCallback(() => {
+      el.scrollLeft = Math.max(0, pending)
       syncRulerScroll()
-      updateWindow()
-    }, [syncRulerScroll, updateWindow])
+    })
 
-    // Keep the cached container width current via ResizeObserver, and
-    // recompute the window whenever it changes. Seeds containerWidthRef
-    // synchronously (not just from the observer's async callback) — this is a
-    // layout effect specifically so it runs before the [zoom, updateWindow]
-    // layout effect below, guaranteeing the very first updateWindow() call
-    // (on mount) sees the real width instead of the useRef(0) default. Without
-    // this, the initial window is computed as [0,0] and stays wrong until the
-    // ResizeObserver's first callback fires — which can lag mount by seconds
-    // under load, culling clips that are actually on-screen.
-    useLayoutEffect(() => {
-      const el = scrollRef.current
-      if (!el) return
-      containerWidthRef.current = el.clientWidth
-      const observer = new ResizeObserver((entries) => {
-        const entry = entries[0]
-        if (!entry) return
-        containerWidthRef.current = entry.contentRect.width
-        updateWindow()
-      })
-      observer.observe(el)
-      return () => observer.disconnect()
-    }, [updateWindow])
+    useImperativeHandle(
+      ref,
+      () => ({ engine, playback, fitToWindow, zoomAtAnchor }),
+      [engine, playback, fitToWindow, zoomAtAnchor],
+    )
 
-    // Recompute on mount and whenever zoom changes — zoom changes clip pixel
-    // positions, so the same scrollLeft maps to a different visible clip set.
-    // Layout-effect timing avoids a first-paint flash where all clips mount.
-    useLayoutEffect(() => {
-      updateWindow()
-    }, [zoom, updateWindow])
+    const tracks = useTracksStore((s) => s.tracks)
+    const totalFrames = useTracksStore((s) => s.totalFrames)
+    const zoom = usePlaybackStore((s) => s.zoom)
+    const setCurrentFrame = usePlaybackStore((s) => s.setCurrentFrame)
 
-    // Ctrl/Cmd + scroll → zoom
+    // Ctrl/Cmd + scroll → zoom, anchored under the cursor. Bound to the
+    // timeline ROOT (capture phase) so it also covers the ruler and sidebar —
+    // previously ctrl+wheel over the ruler fell through to browser page zoom.
     useEffect(() => {
-      const el = scrollRef.current
-      if (!el) return
+      const root = rootRef.current
+      if (!root) return
 
       const handleWheel = (e: WheelEvent) => {
         if (!e.ctrlKey && !e.metaKey) return
         e.preventDefault()
-        const direction = e.deltaY > 0 ? -0.5 : 0.5
-        setZoom(usePlaybackStore.getState().zoom + direction)
+        const el = scrollRef.current
+        if (!el) return
+        const prevZoom = usePlaybackStore.getState().zoom
+        const nextZoom = wheelZoomStep(prevZoom, e.deltaY)
+        const laneX = e.clientX - el.getBoundingClientRect().left - sidebarWidth
+        if (laneX < 0) {
+          // Pointer over the sticky sidebar — anchor on the playhead instead
+          // (clamping to the lane seam would anchor on nothing meaningful).
+          zoomAtAnchor(nextZoom)
+        } else {
+          applyAnchoredZoom(laneX, nextZoom)
+        }
       }
 
-      el.addEventListener('wheel', handleWheel, { passive: false })
-      return () => el.removeEventListener('wheel', handleWheel)
-    }, [setZoom])
+      root.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+      return () =>
+        root.removeEventListener('wheel', handleWheel, { capture: true })
+    }, [applyAnchoredZoom, zoomAtAnchor, sidebarWidth])
 
     // Pinch → timeline zoom, anchored at the finger midpoint so the frame
     // under the pinch stays put. preventDefault stops the browser from
@@ -259,11 +296,7 @@ export const Timeline = memo(
         // Lane x of the pinch midpoint (content coords minus the sticky sidebar).
         const midX =
           (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left - sidebarWidth
-        const prevZoom = usePlaybackStore.getState().zoom
-        const anchorFrame = (el.scrollLeft + midX) / prevZoom
-        usePlaybackStore.getState().setZoom((startZoom * dist(e.touches)) / startDist)
-        const nextZoom = usePlaybackStore.getState().zoom // store-clamped
-        el.scrollLeft = anchorFrame * nextZoom - midX
+        applyAnchoredZoom(midX, (startZoom * dist(e.touches)) / startDist)
       }
 
       const handleTouchEnd = (e: TouchEvent) => {
@@ -280,7 +313,7 @@ export const Timeline = memo(
         el.removeEventListener('touchend', handleTouchEnd)
         el.removeEventListener('touchcancel', handleTouchEnd)
       }
-    }, [sidebarWidth])
+    }, [sidebarWidth, applyAnchoredZoom])
 
     // Keyboard shortcuts: Space = play/pause, Ctrl+Z/Y = undo/redo
     useEffect(() => {
@@ -365,11 +398,16 @@ export const Timeline = memo(
               const offset = src.startFrame - minStart
               const options = buildPasteOptions(src, pasteFrame + offset)
               const newClip = engine.addClip(options)
-              // Preserve trim info the factory doesn't carry through
-              if (src.sourceStartFrame !== 0 || src.sourceDurationFrames !== src.durationFrames) {
+              // Preserve trim info (and speed) the factory doesn't carry through.
+              if (
+                src.sourceStartFrame !== 0 ||
+                src.sourceDurationFrames !== src.durationFrames ||
+                (src.speed !== undefined && src.speed !== 1)
+              ) {
                 engine.updateClip(newClip.id, newClip.trackId, {
                   sourceStartFrame: src.sourceStartFrame,
                   sourceDurationFrames: src.sourceDurationFrames,
+                  ...(src.speed !== undefined ? { speed: src.speed } : {}),
                 })
               }
               newIds.push(newClip.id)
@@ -396,10 +434,23 @@ export const Timeline = memo(
     }, [engine])
 
     const rulerHeight = 24
-    const totalHeight = tracks.reduce((sum, t) => sum + t.height, 0)
+
+    // `trackSlot` renders right after the track named by `trackSlotAfterTrackId`,
+    // falling back to after the very last track when that id is unset or no
+    // longer exists (e.g. the track it anchors to hasn't been created yet).
+    const slotAfterIndex = trackSlot
+      ? (() => {
+          const named = trackSlotAfterTrackId
+            ? tracks.findIndex((t) => t.id === trackSlotAfterTrackId)
+            : -1
+          return named !== -1 ? named : tracks.length - 1
+        })()
+      : -1
 
     return (
       <div
+        ref={rootRef}
+        data-elah-timeline-root=""
         className={cn('bg-ed-bg-2 text-ed-text', classNames?.root, className)}
         style={{
           display: 'flex',
@@ -443,7 +494,7 @@ export const Timeline = memo(
         {/* Track area — single scroll source; scrollbar sits at the bottom */}
         <div
           ref={scrollRef}
-          onScroll={handleTrackAreaScroll}
+          onScroll={syncRulerScroll}
           style={{
             flex: 1,
             overflow: 'auto',
@@ -454,10 +505,9 @@ export const Timeline = memo(
             touchAction: 'pan-x pan-y',
           }}
         >
-          <VisibleWindowContext.Provider value={visibleWindow}>
-            {tracks.map((track) => (
+          {tracks.map((track, index) => (
+            <Fragment key={track.id}>
               <TrackRow
-                key={track.id}
                 track={track}
                 totalFrames={Math.max(totalFrames, fps * 10)}
                 zoom={zoom}
@@ -477,8 +527,30 @@ export const Timeline = memo(
                 clipTextAccent={classNames?.clipTextAccent}
                 clipImageAccent={classNames?.clipImageAccent}
               />
-            ))}
-          </VisibleWindowContext.Provider>
+              {index === slotAfterIndex && trackSlot && (
+                // Mirrors TrackRow's row shape (sidebar spacer + a lane sized
+                // to the same rowMinWidth) purely for layout — so content
+                // placed via `trackSlot` (e.g. a sticky-right launcher
+                // button) behaves the same way TrackRow's own sticky CTAs do
+                // at any zoom level, without the host app needing to know
+                // about sidebarWidth/zoom/totalFrames itself.
+                <div style={{ display: 'flex', height: 34 }}>
+                  <div aria-hidden style={{ width: sidebarWidth, flexShrink: 0 }} />
+                  <div
+                    style={{
+                      position: 'relative',
+                      flex: 1,
+                      minWidth: timelineContentWidth(Math.max(totalFrames, fps * 10), zoom),
+                      display: 'flex',
+                      alignItems: 'center',
+                    }}
+                  >
+                    {trackSlot}
+                  </div>
+                </div>
+              )}
+            </Fragment>
+          ))}
 
           {tracks.length === 0 && (
             <div
@@ -506,9 +578,10 @@ export const Timeline = memo(
         {/* Blocking modal for the "video has audio" drop choice (position:fixed,
             so it overlays the whole app regardless of mount point). */}
         <AudioDropDialog />
+
+        {/* AI-tools modal, opened from the Sparkles button on a track label. */}
+        <AiTrackDialog />
       </div>
     )
   }),
 )
-
-

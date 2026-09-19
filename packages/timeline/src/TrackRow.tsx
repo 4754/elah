@@ -13,13 +13,22 @@ import {
   Volume2,
   VolumeX,
   Trash2,
+  Sparkles,
 } from 'lucide-react'
 import { ClipBlock } from './ClipBlock'
 import { TransitionChip } from './TransitionChip'
 import { useTimeline } from './engine-context'
 import { useTimelineDrop } from './useTimelineDrop'
+import { useAiTrackDialogStore } from './aiTrackDialog.store'
+import { GenerationProgressBar } from './GenerationProgressBar'
 import { cn } from './cn'
+import { timelineContentWidth } from './contentWidth'
 import { useVisibleWindow, isClipVisible, VIRTUALIZATION_BUFFER_PX } from './visible-window'
+
+/** Mirrors the same heuristic estimate used by AiTrackDialog, so the track's
+ * progress overlay and the modal's progress bar stay in sync. */
+const GENERATION_ESTIMATED_MS: Partial<Record<string, number>> = {}
+const DEFAULT_GENERATION_ESTIMATED_MS = 10_000
 
 /** Sidebar width — kept in sync with SIDEBAR_WIDTH in Timeline.tsx (ruler offset). */
 const SIDEBAR_WIDTH = 184
@@ -38,6 +47,16 @@ const KIND_ACCENT: Record<string, string> = {
   video: 'text-clip-video-mid',
   audio: 'text-clip-audio-mid',
   elements: 'text-clip-text-mid',
+}
+
+// Empty-state CTA copy for an AI-managed protected track — video is excluded
+// (see isAiManagedTrack) since it's the one lane users still populate by hand.
+// Elements (Subtitles) tracks are no longer protected/AI-managed: they're
+// generated on demand into unprotected lanes via the app's own launcher. This
+// app no longer protects any audio track by default, so this only applies if
+// a host app opts an audio (or future) track kind into that pattern itself.
+const AUTO_GENERATE_LABEL: Record<string, string> = {
+  audio: 'Auto-generate with AI',
 }
 
 interface TrackRowProps {
@@ -126,6 +145,12 @@ export const TrackRow = memo(function TrackRow({
   const engine = useTimeline()
   const [laneEl, setLaneEl] = useState<HTMLDivElement | null>(null)
 
+  // AI generation in progress for this specific track — drives the lane's
+  // progress overlay, kept in sync with the AiTrackDialog modal via the
+  // same store (see aiTrackDialog.store.ts).
+  const isGenerating = useAiTrackDialogStore((s) => s.status === 'busy' && s.trackId === track.id)
+  const generationStartedAt = useAiTrackDialogStore((s) => s.startedAt)
+
   // Header controls toggle Track flags the resolver already honors:
   // disabled → track skipped, muted → volume 0 (see resolveTimeline).
   const stop = (e: React.MouseEvent) => e.stopPropagation()
@@ -144,6 +169,10 @@ export const TrackRow = memo(function TrackRow({
   const deleteTrack = (e: React.MouseEvent) => {
     stop(e)
     engine.removeTrack(track.id)
+  }
+  const openAiTools = (e: React.MouseEvent) => {
+    stop(e)
+    useAiTrackDialogStore.getState().openFor(track)
   }
 
   // Only allow deleting a track when more than one of its kind exists — never
@@ -167,11 +196,17 @@ export const TrackRow = memo(function TrackRow({
     color: 'var(--elah-text-muted)',
   }
 
-  const dropState = useTimelineDrop(track.id, laneEl)
+  // Subtitles/Voice over are AI-managed lanes: content arrives via generation,
+  // not manual placement, so drag & drop is switched off (video keeps it — it's
+  // still the hand-populated lane). blockDrop keeps the lane listening (so it
+  // can show the red 'invalid' highlight on drag-over) but swallows the drop.
+  const isAiManagedTrack = Boolean(track.protected) && track.kind !== 'video'
+  const isEmpty = clips.length === 0
+  const dropState = useTimelineDrop(track.id, laneEl, { blockDrop: isAiManagedTrack })
 
   // Minimum pixel width so there is always a usable timeline on small screens.
   // flex:1 grows it to fill the container when the container is larger.
-  const rowMinWidth = Math.max(totalFrames * zoom, 800)
+  const rowMinWidth = timelineContentWidth(totalFrames, zoom)
 
   // Per-track-kind accent (the colored left bar). The matching clip accent slot
   // overrides the default mid token (both as a text-color class read via
@@ -240,9 +275,37 @@ export const TrackRow = memo(function TrackRow({
           </span>
         )}
 
-        {/* Per-track controls — visibility, mute (audio only), lock.
-            Hidden in compact mode: a ~48px sidebar fits only the kind glyph. */}
-        {!compact && (
+        {/* AI tools — opens a per-track AI modal (see AiTrackDialog). Default
+            (protected) tracks only: user-added tracks get the edit controls instead. */}
+        {!compact && track.protected && (
+          <button
+            type="button"
+            onClick={openAiTools}
+            title="AI tools"
+            aria-label={`AI tools for ${track.name}`}
+            className="text-ed-text-muted hover:text-ed-error transition-colors"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 18,
+              height: 18,
+              padding: 0,
+              border: 'none',
+              borderRadius: 4,
+              background: 'transparent',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            <Sparkles size={13} strokeWidth={1.75} />
+          </button>
+        )}
+
+        {/* Per-track controls — visibility, mute (audio only), lock, delete.
+            User-added tracks only: the default Video/Subtitles/Voice tracks are
+            protected and keep just the AI action. Hidden in compact mode too. */}
+        {!compact && !track.protected && (
         <span style={{ display: 'inline-flex', gap: 1, flexShrink: 0 }}>
           <button
             type="button"
@@ -299,7 +362,7 @@ export const TrackRow = memo(function TrackRow({
             )}
           </button>
 
-          {/* Delete — only when more than one track of this kind exists. */}
+          {/* Delete — only when more than one track of this kind exists (never remove the last of a kind). */}
           {sameKindCount > 1 && (
             <button
               type="button"
@@ -318,6 +381,13 @@ export const TrackRow = memo(function TrackRow({
       {/* Clip area — bottom border is static */}
       <div
         ref={setLaneEl}
+        // Read by ClipBlock's cross-track drag gesture (elementsFromPoint under
+        // the pointer -> nearest [data-elah-lane]) to resolve which track a
+        // clip is being dragged over.
+        data-elah-lane=""
+        data-track-id={track.id}
+        data-track-kind={track.kind}
+        data-track-locked={track.locked ? 'true' : undefined}
         className={cn(
           'border-ed-border-subtle',
           isActive ? 'bg-ed-card' : 'bg-ed-bg-2',
@@ -349,6 +419,76 @@ export const TrackRow = memo(function TrackRow({
                 : undefined,
         }}
       >
+        {/* Empty-state affordance for AI-managed lanes — shaded fill so the lane
+            reads as "generate, don't drop", plus a CTA pinned just past the
+            sidebar (sticky, like the label) so it stays reachable while scrolled. */}
+        {isAiManagedTrack && isEmpty && (
+          <>
+            <div
+              aria-hidden
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'color-mix(in srgb, var(--elah-text-muted) 6%, transparent)',
+                pointerEvents: 'none',
+              }}
+            />
+            <button
+              type="button"
+              onClick={openAiTools}
+              title={AUTO_GENERATE_LABEL[track.kind]}
+              style={{
+                position: 'sticky',
+                left: sidebarWidth + 8,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                zIndex: 5,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '5px 10px',
+                border: '1px solid var(--elah-dialog-border)',
+                borderRadius: 6,
+                background: 'var(--elah-dialog-bg)',
+                color: 'var(--elah-text)',
+                fontSize: 12,
+                fontWeight: 600,
+                lineHeight: 1,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <Sparkles size={13} strokeWidth={1.75} className="text-ed-error" aria-hidden />
+              {AUTO_GENERATE_LABEL[track.kind]}
+            </button>
+          </>
+        )}
+
+        {/* Generation-in-progress overlay — mirrors the AiTrackDialog modal's
+            progress bar so the lane itself shows that AI content is on its way,
+            not just the (possibly already-closed) modal. */}
+        {isGenerating && generationStartedAt && (
+          <div
+            aria-hidden
+            style={{
+              position: 'sticky',
+              left: sidebarWidth + 8,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              zIndex: 5,
+              width: 160,
+              maxWidth: `calc(100% - ${sidebarWidth + 16}px)`,
+              pointerEvents: 'none',
+            }}
+          >
+            <GenerationProgressBar
+              startedAt={generationStartedAt}
+              estimatedMs={GENERATION_ESTIMATED_MS[track.kind] ?? DEFAULT_GENERATION_ESTIMATED_MS}
+              label="Generating…"
+            />
+          </div>
+        )}
+
         {clips.map((clip) => {
           const clipStartPx = clip.startFrame * zoom
           const clipEndPx = (clip.startFrame + clip.durationFrames) * zoom
