@@ -616,9 +616,7 @@ function drawText(
   stageH: number,
 ): void {
   const layout = computeTextLayout(ctx, clip, { width: stageW, height: stageH })
-  ctx.fillStyle = layout.style.color
-  ctx.textAlign = layout.style.textAlign
-  ctx.textBaseline = 'middle'
+  const { backgroundColor, backgroundOpacity, borderWidth, borderColor, borderRadius } = layout.style
 
   const rotation = clip.transform?.rotation ?? 0
   if (rotation !== 0) {
@@ -629,9 +627,61 @@ function drawText(
     ctx.translate(-cx, -cy)
   }
 
+  // Background panel and border — mirrors TextLayer.paint so the export matches
+  // the preview. Without this the exported file showed bare glyphs while the
+  // editor showed the caption on its panel.
+  if (backgroundColor) {
+    ctx.save()
+    ctx.globalAlpha *= backgroundOpacity
+    ctx.fillStyle = backgroundColor
+    roundRectPath(ctx, layout.box.x, layout.box.y, layout.box.width, layout.box.height, borderRadius)
+    ctx.fill()
+    ctx.restore()
+  }
+
+  if (borderWidth > 0) {
+    ctx.save()
+    ctx.strokeStyle = borderColor
+    ctx.lineWidth = borderWidth
+    const inset = borderWidth / 2
+    roundRectPath(
+      ctx,
+      layout.box.x + inset,
+      layout.box.y + inset,
+      layout.box.width - borderWidth,
+      layout.box.height - borderWidth,
+      Math.max(0, borderRadius - inset),
+    )
+    ctx.stroke()
+    ctx.restore()
+  }
+
+  ctx.fillStyle = layout.style.color
+  ctx.textAlign = layout.style.textAlign
+  ctx.textBaseline = 'middle'
+
   for (let i = 0; i < layout.lines.length; i++) {
     ctx.fillText(layout.lines[i], layout.anchorX, layout.firstLineY + i * layout.lineAdvance)
   }
+}
+
+/** Same rounded-rect tracing as TextLayer's roundRectPath (radius clamped to half the shorter side). */
+function roundRectPath(
+  ctx: OffscreenCanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
+  const radius = Math.max(0, Math.min(r, w / 2, h / 2))
+  ctx.beginPath()
+  ctx.moveTo(x + radius, y)
+  ctx.arcTo(x + w, y, x + w, y + h, radius)
+  ctx.arcTo(x + w, y + h, x, y + h, radius)
+  ctx.arcTo(x, y + h, x, y, radius)
+  ctx.arcTo(x, y, x + w, y, radius)
+  ctx.closePath()
 }
 
 /** Mirrors ShapeLayer.paintShape — same centered rect/circle/triangle geometry. */

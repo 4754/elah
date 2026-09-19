@@ -67,6 +67,18 @@ export interface ActiveTextClip extends ActiveClipBase {
   fontFamily?: string
   fontWeight?: 'normal' | 'bold'
   textAlign?: 'left' | 'center' | 'right'
+  /** CSS color string for the box painted behind the glyphs. Undefined = no background. */
+  backgroundColor?: string
+  /** Opacity of `backgroundColor`, 0–1. Undefined → TextLayer default (1). */
+  backgroundOpacity?: number
+  /** Space in stage-space pixels between the glyphs and the background/border box. */
+  padding?: number
+  /** Corner radius of the background/border box, in stage-space pixels. */
+  borderRadius?: number
+  /** Stroke width of the box border, in stage-space pixels. 0/undefined = no border. */
+  borderWidth?: number
+  /** CSS color string for the box border. */
+  borderColor?: string
 }
 
 export interface ActiveImageClip extends ActiveClipBase {

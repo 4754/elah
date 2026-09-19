@@ -40,6 +40,21 @@ export type {
 
 export { TimelineEngine } from '@elah/core'
 
+export {
+  BUILT_IN_TEXT_STYLE_PRESETS,
+  BUILT_IN_TEXT_TEMPLATES,
+  applyTextTemplate,
+  findTextTemplate,
+  // Needed by anything that builds a timeline from a template rather than
+  // applying one to a clip the user selected — see `lib/motion/overlay.ts`.
+  resolveTemplateRamp,
+  LINE_HEIGHT,
+} from '@elah/core'
+export type {
+  TextTemplate,
+  TextTemplateStagger,
+} from '@elah/core'
+
 // --- Restore: a stored document back into the engine ---
 export {
   PROJECT_VERSION,

@@ -201,6 +201,12 @@ export function resolveTimeline(frame: number, project: Project): Scene {
           ...(clip.fontFamily !== undefined ? { fontFamily: clip.fontFamily } : {}),
           ...(clip.fontWeight !== undefined ? { fontWeight: clip.fontWeight } : {}),
           ...(clip.textAlign !== undefined ? { textAlign: clip.textAlign } : {}),
+          ...(clip.backgroundColor !== undefined ? { backgroundColor: clip.backgroundColor } : {}),
+          ...(clip.backgroundOpacity !== undefined ? { backgroundOpacity: clip.backgroundOpacity } : {}),
+          ...(clip.padding !== undefined ? { padding: clip.padding } : {}),
+          ...(clip.borderRadius !== undefined ? { borderRadius: clip.borderRadius } : {}),
+          ...(clip.borderWidth !== undefined ? { borderWidth: clip.borderWidth } : {}),
+          ...(clip.borderColor !== undefined ? { borderColor: clip.borderColor } : {}),
         }
         scene.texts.push(active)
       } else if (clip.type === 'image' && clip.src) {

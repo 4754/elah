@@ -97,7 +97,7 @@ export type { RendererOptions } from './renderer/gpu/types'
 export { resolveDrawRect, transformFromContainRect, transformFromCoverRect, normalizeCrop, FULL_CROP } from './renderer/gpu/layers/drawRect'
 export type { CropRect } from './renderer/gpu/layers/drawRect'
 export { computeContainViewport } from './renderer/gpu/viewport'
-export { computeTextLayout, SIDE_MARGIN } from './renderer/gpu/layers/textLayout'
+export { computeTextLayout, SIDE_MARGIN, LINE_HEIGHT } from './renderer/gpu/layers/textLayout'
 export type { TextLayout } from './renderer/gpu/layers/textLayout'
 
 // --- Media backends ---
@@ -204,6 +204,21 @@ export { createShapeClip } from './elements/shape'
 export type { CreateShapeClipOptions } from './elements/shape'
 export { createFreehandClip } from './elements/freehand'
 export type { CreateFreehandClipOptions } from './elements/freehand'
+export {
+  BUILT_IN_TEXT_TEMPLATES,
+  applyTextTemplate,
+  findTextTemplate,
+  resolveTemplateRamp,
+  MAX_TEMPLATE_RAMP_FRAMES,
+  MIN_TEMPLATE_RAMP_FRAMES,
+} from './elements/textTemplates'
+export type {
+  TextTemplate,
+  TextTemplateStyle,
+  TextTemplateAnimation,
+  TextTemplateStagger,
+} from './elements/textTemplates'
+
 
 // --- Actions ---
 export { splitClipAtPlayhead } from './actions/splitClipAtPlayhead'

@@ -201,6 +201,18 @@ export interface Clip {
   fontFamily?: string
   fontWeight?: 'normal' | 'bold'
   textAlign?: 'left' | 'center' | 'right'
+  /** CSS color string for the box painted behind the glyphs. Undefined = no background. */
+  backgroundColor?: string
+  /** Opacity of `backgroundColor`, 0–1. Default 1. */
+  backgroundOpacity?: number
+  /** Space in stage-space pixels between the glyphs and the background/border box. */
+  padding?: number
+  /** Corner radius of the background/border box, in stage-space pixels. */
+  borderRadius?: number
+  /** Stroke width of the box border, in stage-space pixels. 0 (or omitted) = no border. */
+  borderWidth?: number
+  /** CSS color string for the box border. */
+  borderColor?: string
 
   // --- Shape style (shape clips only) ---
   /** Which SVG primitive to render */

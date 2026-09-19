@@ -198,20 +198,37 @@ export class TimelineEngine {
   // Track operations
   // ---------------------------------------------------------------------------
 
-  /** New tracks append below existing ones (order = current count) and start with an empty clip list. */
   /**
-   * Track model: the renderer composites a single video track, so video is
-   * capped at one — adding a video track when one already exists returns the
-   * existing track (idempotent) rather than creating a second. Audio and elements
-   * tracks may have any number of lanes.
+   * Track model: any number of tracks of any kind. Multiple video tracks
+   * composite in track order — the resolver derives zIndex from `track.order`
+   * (topmost lane draws on top), so overlapping clips on separate video lanes
+   * layer rather than conflict.
+   *
+   * Placement: a new video track slots in directly below the last existing
+   * video track (keeping video lanes grouped at the top, above audio/elements);
+   * every other kind appends below all existing tracks.
    */
   addTrack(kind: TrackKind, options?: Partial<CreateTrackOptions>): Track {
-    if (kind === 'video') {
-      const existingVideo = this.project.tracks.find((t) => t.kind === 'video')
-      if (existingVideo) return existingVideo
-    }
+    const videoOrders = this.project.tracks
+      .filter((t) => t.kind === 'video')
+      .map((t) => t.order)
+    // Bottom-pinned lanes (audio + its generated subtitle lanes, in this
+    // product) must stay below every freely-added track. A new pinned track
+    // joins that block at the very end (today's plain-append behaviour); a
+    // new non-pinned, non-video track inserts just above the block instead
+    // of after it, which is the only way "add track" can land between video
+    // and a bar that's meant to stay fixed at the bottom. No pinned tracks
+    // means this is a no-op — same append-at-end behaviour as before.
+    const pinnedOrders = this.project.tracks
+      .filter((t) => t.pinned === 'bottom')
+      .map((t) => t.order)
+    const order =
+      kind === 'video' && videoOrders.length > 0
+        ? Math.max(...videoOrders) + 1
+        : options?.pinned === 'bottom' || pinnedOrders.length === 0
+          ? this.project.tracks.length
+          : Math.min(...pinnedOrders)
 
-    const order = this.project.tracks.length
     const track = createTrack({
       kind,
       order,
@@ -221,7 +238,14 @@ export class TimelineEngine {
 
     this.commit(
       (draft) => {
+        // Make room at the insertion point: everything at or below it shifts
+        // down one slot. For plain appends nothing is >= tracks.length, so
+        // this is a no-op.
+        for (const t of draft.tracks) {
+          if (t.order >= track.order) t.order += 1
+        }
         draft.tracks.push(track as Draft<Track>)
+        draft.tracks.sort((a, b) => a.order - b.order)
         draft.clips[track.id] = []
       },
       `Add ${kind} track`,
@@ -231,8 +255,11 @@ export class TimelineEngine {
     return track
   }
 
-  /** Removes the track's clips with it, all in a single undo entry. */
+  /** Removes the track's clips with it, all in a single undo entry. No-op for protected tracks. */
   removeTrack(trackId: string): void {
+    const track = this.project.tracks.find((t) => t.id === trackId)
+    if (track?.protected) return
+
     this.commit(
       (draft) => removeTrack(draft, trackId),
       `Remove track`,
