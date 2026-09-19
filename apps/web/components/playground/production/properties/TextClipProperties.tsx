@@ -5,16 +5,22 @@ import {
   AlignLeft,
   AlignCenter,
   AlignRight,
+  X,
 } from 'lucide-react'
 import {
-  useSelectionStore,
-  useTracksStore,
   useTimelineEngine,
+  useTextStylePresetsStore,
+  BUILT_IN_TEXT_STYLE_PRESETS,
+  BUILT_IN_TEXT_TEMPLATES,
+  TEXT_ANIMATION_KINDS,
+  applyTextTemplate,
   type Clip,
-  type TextAnimationKind,
   type TextAnimation,
+  type TextStylePreset,
+  type TextTemplate,
 } from '@elah/editor'
 import { cn } from '@/lib/utils'
+import { useSelectedTextClip } from '../useSelectedTextClip'
 import {
   inputCls,
   Field,
@@ -23,9 +29,29 @@ import {
   PANEL,
   PanelHeader,
   mergeTransform,
+  clipTimecode,
+  readAnimationKind,
 } from './propertiesShared'
 
-const FONTS = ['sans-serif', 'serif', 'monospace', 'Georgia', 'Impact']
+const FONTS = [
+  'sans-serif',
+  'serif',
+  'monospace',
+  'Georgia',
+  'Impact',
+  'Arial',
+  'Helvetica',
+  'Verdana',
+  'Tahoma',
+  'Trebuchet MS',
+  'Times New Roman',
+  'Courier New',
+  'Palatino',
+  'Garamond',
+  'Comic Sans MS',
+  'cursive',
+  'fantasy',
+]
 
 type Tab = 'style' | 'transform' | 'animate'
 const TABS: { id: Tab; label: string }[] = [
@@ -62,21 +88,111 @@ function AlignBtn({
   )
 }
 
+function PresetChip({
+  preset,
+  onApply,
+  onDelete,
+}: {
+  preset: TextStylePreset
+  onApply: () => void
+  onDelete?: () => void
+}) {
+  return (
+    <div className="group relative flex items-center">
+      <button
+        type="button"
+        onClick={onApply}
+        title={`Apply "${preset.name}"`}
+        className={cn(
+          'pl-2.5 py-1 rounded-full border border-ed-border bg-ed-bg text-[12px] text-ed-text-muted hover:text-ed-text hover:border-ed-accent transition-colors',
+          onDelete ? 'pr-6' : 'pr-2.5',
+        )}
+      >
+        {preset.name}
+      </button>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          title="Delete preset"
+          className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center w-4 h-4 rounded-full text-ed-text-muted opacity-0 group-hover:opacity-100 hover:bg-ed-bg-2 hover:text-ed-text transition-opacity"
+        >
+          <X size={11} />
+        </button>
+      )}
+    </div>
+  )
+}
+
 function mergeAnim(c: Partial<Clip>): TextAnimation {
   return { durationFrames: 15, ...c.textAnimation }
 }
 
-function useSelectedTextClip(): Clip | null {
-  const selectedClipIds = useSelectionStore((s) => s.selectedClipIds)
-  const clips = useTracksStore((s) => s.clips)
+/**
+ * Summarize what a template's entry actually does, for the picker subtitle.
+ *
+ * Derived from the spec's channels rather than stored as a string, so a template
+ * whose motion is retuned cannot end up described by a stale label. Reads the
+ * entry only: it is the half a viewer notices, and two lines of chip is enough.
+ */
+function describeMotion(template: TextTemplate): string {
+  const spec = template.animation.in
+  if (!spec) return ''
 
-  if (selectedClipIds.size !== 1) return null
-  const [id] = selectedClipIds
-  for (const trackClips of Object.values(clips)) {
-    const clip = trackClips.find((c) => c.id === id && c.type === 'text')
-    if (clip) return clip
-  }
-  return null
+  const parts: string[] = []
+  if (spec.opacity !== undefined) parts.push('Fade')
+  if (spec.offsetY !== undefined) parts.push(spec.offsetY > 0 ? 'Rise' : 'Drop')
+  if (spec.offsetX !== undefined) parts.push(spec.offsetX > 0 ? 'From right' : 'From left')
+  if (spec.scale !== undefined) parts.push(spec.scale < 1 ? 'Grow' : 'Shrink')
+  if (spec.rotation !== undefined) parts.push('Tilt')
+
+  // The curve is the part that makes two otherwise-identical templates feel
+  // different, so it is worth surfacing when it is one of the expressive ones.
+  const flavour =
+    spec.ease === 'back-out' || spec.ease === 'elastic-out'
+      ? ' · springy'
+      : spec.ease === 'bounce-out'
+        ? ' · bouncy'
+        : ''
+
+  return parts.join(' + ') + flavour
+}
+
+/**
+ * One template in the picker. Deliberately describes the motion in words rather
+ * than showing a thumbnail: a still image cannot convey an entry/exit, and the
+ * clip itself is the preview — applying is one click and undoable, so trying a
+ * template IS the preview.
+ */
+function TemplateCard({
+  template,
+  onApply,
+}: {
+  template: TextTemplate
+  onApply: () => void
+}) {
+  const motion = describeMotion(template)
+
+  return (
+    <button
+      type="button"
+      onClick={onApply}
+      title={template.description}
+      className="w-full text-left px-3 py-2 rounded-md border border-ed-border bg-ed-bg hover:border-ed-accent transition-colors cursor-pointer"
+    >
+      <div
+        className="text-[13px] text-ed-text truncate"
+        style={{
+          fontFamily: template.style.fontFamily,
+          fontWeight: template.style.fontWeight,
+          color: template.style.color,
+        }}
+      >
+        {template.name}
+      </div>
+      {motion && <div className="text-[11px] text-ed-text-muted mt-0.5">{motion}</div>}
+    </button>
+  )
 }
 
 export function TextClipProperties() {
@@ -84,6 +200,10 @@ export function TextClipProperties() {
   const clip = useSelectedTextClip()
   const [local, setLocal] = useState<Partial<Clip>>({})
   const [tab, setTab] = useState<Tab>('style')
+  const [presetName, setPresetName] = useState('')
+  const presets = useTextStylePresetsStore((s) => s.presets)
+  const addPreset = useTextStylePresetsStore((s) => s.addPreset)
+  const removePreset = useTextStylePresetsStore((s) => s.removePreset)
 
   useEffect(() => {
     if (clip) setLocal({})
@@ -93,7 +213,7 @@ export function TextClipProperties() {
     return (
       <div className={cn(PANEL, 'overflow-hidden')}>
         <PanelHeader />
-        <div className="flex-1 flex items-center justify-center p-6 text-center text-xs text-ed-text-muted">
+        <div className="flex-1 flex items-center justify-center p-6 text-center text-[13px] text-ed-text-muted">
           Select a text clip to edit properties
         </div>
       </div>
@@ -107,8 +227,7 @@ export function TextClipProperties() {
     engine.updateClip(clip.id, clip.trackId, updates)
   }
 
-  const startSec = (clip.startFrame / 30).toFixed(0)
-  const endSec = ((clip.startFrame + clip.durationFrames) / 30).toFixed(0)
+  const fps = engine.getProject().fps
 
   const tf = mergeTransform(effective)
   const setTf = (patch: Partial<ReturnType<typeof mergeTransform>>) =>
@@ -117,7 +236,7 @@ export function TextClipProperties() {
 
   return (
     <div className={cn(PANEL, 'overflow-hidden')}>
-      <PanelHeader subtitle={`${clip.name} · 0:${startSec.padStart(2, '0')}–0:${endSec.padStart(2, '0')}`} />
+      <PanelHeader subtitle={clipTimecode(clip, fps)} />
 
       {/* Tabs — active gets a cyan underline (Figma) */}
       <div className="flex items-center gap-4 px-4 border-b border-ed-border shrink-0">
@@ -127,7 +246,7 @@ export function TextClipProperties() {
             type="button"
             onClick={() => setTab(t.id)}
             className={cn(
-              'relative py-2.5 text-xs transition-colors',
+              'relative py-2.5 text-[13px] transition-colors',
               tab === t.id ? 'text-ed-text' : 'text-ed-text-muted hover:text-ed-text',
             )}
           >
@@ -230,6 +349,176 @@ export function TextClipProperties() {
               </div>
             </Field>
 
+            <Field label="Background">
+              <div className="flex gap-1.5 items-center">
+                <input
+                  type="color"
+                  value={effective.backgroundColor ?? '#000000'}
+                  onChange={(e) => commit({ backgroundColor: e.target.value })}
+                  className="w-9 h-8 p-0 border border-ed-border rounded-md cursor-pointer bg-transparent shrink-0"
+                />
+                <input
+                  type="text"
+                  value={effective.backgroundColor ?? ''}
+                  placeholder="None"
+                  onChange={(e) =>
+                    setLocal((p) => ({ ...p, backgroundColor: e.target.value || undefined }))
+                  }
+                  onBlur={() => {
+                    const v = effective.backgroundColor || undefined
+                    if (v !== (clip.backgroundColor || undefined)) commit({ backgroundColor: v })
+                  }}
+                  className={cn(inputCls, 'font-mono')}
+                />
+                {effective.backgroundColor && (
+                  <button
+                    type="button"
+                    title="Remove background"
+                    onClick={() => commit({ backgroundColor: undefined })}
+                    className="shrink-0 w-8 h-8 flex items-center justify-center rounded-md border border-ed-border text-ed-text-muted hover:text-ed-text hover:border-ed-accent transition-colors"
+                  >
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
+            </Field>
+
+            {effective.backgroundColor && (
+              <SliderRow
+                label="Background opacity"
+                value={effective.backgroundOpacity ?? 1}
+                display={`${Math.round((effective.backgroundOpacity ?? 1) * 100)}%`}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(v) => commit({ backgroundOpacity: v })}
+              />
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Padding">
+                <NumberField
+                  value={effective.padding ?? 0}
+                  step={1}
+                  min={0}
+                  max={400}
+                  suffix="px"
+                  onChange={(v) => setLocal((p) => ({ ...p, padding: v }))}
+                  onCommit={() => {
+                    const v = effective.padding ?? 0
+                    if (v !== (clip.padding ?? 0)) commit({ padding: v })
+                  }}
+                />
+              </Field>
+              <Field label="Corner radius">
+                <NumberField
+                  value={effective.borderRadius ?? 0}
+                  step={1}
+                  min={0}
+                  max={400}
+                  suffix="px"
+                  onChange={(v) => setLocal((p) => ({ ...p, borderRadius: v }))}
+                  onCommit={() => {
+                    const v = effective.borderRadius ?? 0
+                    if (v !== (clip.borderRadius ?? 0)) commit({ borderRadius: v })
+                  }}
+                />
+              </Field>
+            </div>
+
+            <Field label="Border">
+              <div className="flex gap-1.5 items-center">
+                <input
+                  type="color"
+                  value={effective.borderColor ?? '#ffffff'}
+                  onChange={(e) => commit({ borderColor: e.target.value })}
+                  className="w-9 h-8 p-0 border border-ed-border rounded-md cursor-pointer bg-transparent shrink-0"
+                />
+                <NumberField
+                  value={effective.borderWidth ?? 0}
+                  step={1}
+                  min={0}
+                  max={100}
+                  suffix="px"
+                  onChange={(v) => setLocal((p) => ({ ...p, borderWidth: v }))}
+                  onCommit={() => {
+                    const v = effective.borderWidth ?? 0
+                    if (v !== (clip.borderWidth ?? 0)) commit({ borderWidth: v })
+                  }}
+                />
+              </div>
+            </Field>
+
+            <Field label="Style presets">
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {BUILT_IN_TEXT_STYLE_PRESETS.map((preset) => (
+                  <PresetChip
+                    key={preset.id}
+                    preset={preset}
+                    onApply={() =>
+                      commit({
+                        fontFamily: preset.fontFamily,
+                        fontWeight: preset.fontWeight,
+                        fontSize: preset.fontSize,
+                        textAlign: preset.textAlign,
+                        color: preset.color,
+                        opacity: preset.opacity,
+                      })
+                    }
+                  />
+                ))}
+              </div>
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={presetName}
+                  onChange={(e) => setPresetName(e.target.value)}
+                  placeholder="Preset name"
+                  className={inputCls}
+                />
+                <button
+                  type="button"
+                  disabled={!presetName.trim()}
+                  onClick={() => {
+                    addPreset({
+                      name: presetName.trim(),
+                      fontFamily: effective.fontFamily ?? 'sans-serif',
+                      fontWeight: effective.fontWeight ?? 'normal',
+                      fontSize: effective.fontSize ?? 48,
+                      textAlign: effective.textAlign ?? 'center',
+                      color: effective.color ?? '#ffffff',
+                      opacity: effective.opacity ?? 1,
+                    })
+                    setPresetName('')
+                  }}
+                  className="shrink-0 px-3 rounded-md border border-ed-accent bg-ed-accent-soft text-ed-accent-hover text-[13px] disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:opacity-90 transition-opacity"
+                >
+                  Save
+                </button>
+              </div>
+              {presets.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {presets.map((preset) => (
+                    <PresetChip
+                      key={preset.id}
+                      preset={preset}
+                      onApply={() =>
+                        commit({
+                          fontFamily: preset.fontFamily,
+                          fontWeight: preset.fontWeight,
+                          fontSize: preset.fontSize,
+                          textAlign: preset.textAlign,
+                          color: preset.color,
+                          opacity: preset.opacity,
+                        })
+                      }
+                      onDelete={() => removePreset(preset.id)}
+                    />
+                  ))}
+                </div>
+              )}
+            </Field>
+
             <SliderRow
               label="Opacity"
               value={effective.opacity ?? 1}
@@ -287,43 +576,70 @@ export function TextClipProperties() {
 
         {tab === 'animate' && (
           <>
+            <Field label="Templates">
+              <div className="grid grid-cols-2 gap-1.5">
+                {BUILT_IN_TEXT_TEMPLATES.map((template) => (
+                  <TemplateCard
+                    key={template.id}
+                    template={template}
+                    // `applyTextTemplate` reads the CLIP, not `effective`, so the
+                    // ramp is resolved against the clip's real length on the
+                    // timeline. Committing the whole patch in one `updateClip`
+                    // keeps it a single undo step.
+                    onApply={() => commit(applyTextTemplate(template, clip))}
+                  />
+                ))}
+              </div>
+              <div className="text-[11px] text-ed-text-muted mt-1.5">
+                Applying a template replaces the clip’s look and motion. Your text is kept.
+              </div>
+            </Field>
+
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Fade In">
+              <Field label="Entry">
                 <select
                   value={effective.textAnimation?.in ?? 'none'}
                   onChange={(e) => {
-                    const val = e.target.value
+                    const val = readAnimationKind(e.target.value)
                     commit({
                       textAnimation: {
                         durationFrames: effective.textAnimation?.durationFrames ?? 15,
                         ...effective.textAnimation,
-                        in: val === 'none' ? undefined : (val as TextAnimationKind),
+                        in: val,
                       },
                     })
                   }}
                   className={cn(inputCls, 'cursor-pointer')}
                 >
                   <option value="none">None</option>
-                  <option value="fade">Fade</option>
+                  {TEXT_ANIMATION_KINDS.map((option) => (
+                    <option key={option.kind} value={option.kind}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </Field>
-              <Field label="Fade Out">
+              <Field label="Exit">
                 <select
                   value={effective.textAnimation?.out ?? 'none'}
                   onChange={(e) => {
-                    const val = e.target.value
+                    const val = readAnimationKind(e.target.value)
                     commit({
                       textAnimation: {
                         durationFrames: effective.textAnimation?.durationFrames ?? 15,
                         ...effective.textAnimation,
-                        out: val === 'none' ? undefined : (val as TextAnimationKind),
+                        out: val,
                       },
                     })
                   }}
                   className={cn(inputCls, 'cursor-pointer')}
                 >
                   <option value="none">None</option>
-                  <option value="fade">Fade</option>
+                  {TEXT_ANIMATION_KINDS.map((option) => (
+                    <option key={option.kind} value={option.kind}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </Field>
             </div>

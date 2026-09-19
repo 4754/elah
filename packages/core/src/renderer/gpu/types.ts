@@ -69,6 +69,15 @@ export interface RendererOptions {
    * host should remount the renderer and/or surface recovery UI.
    */
   onContextUnrecoverable?: () => void
+  /**
+   * Notified when a video clip starts loading (`'loading'`), fails to open
+   * (`'error'`), or becomes drawable (`null`).
+   *
+   * Fires at clip-boundary events only — acquire, first successful upload,
+   * open failure, release — never per frame, so a host can drive a spinner from
+   * it without re-rendering on the render loop.
+   */
+  onClipLoad?: (clipId: string, state: 'loading' | 'error' | null) => void
 }
 
 /**

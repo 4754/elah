@@ -366,6 +366,85 @@ describe('VideoLayer', () => {
     expect(layer.getProviderRefCount('clip-a')).toBe(1)
   })
 
+  describe('onClipLoad', () => {
+    it('reports loading on acquire and clears it on the first drawn frame', () => {
+      const onClipLoad = vi.fn()
+      layer = new VideoLayer(pool, () => provider, { onClipLoad })
+      const clip = makeClip()
+
+      layer.acquire(clip, ctx)
+      expect(onClipLoad).toHaveBeenCalledWith('clip-a', 'loading')
+
+      // No frame yet — the clip is still waiting, and nothing is reported.
+      onClipLoad.mockClear()
+      layer.draw(clip, ctx)
+      expect(onClipLoad).not.toHaveBeenCalled()
+
+      provider.getCurrent.mockReturnValue(mockFrame())
+      layer.draw(clip, ctx)
+      expect(onClipLoad).toHaveBeenCalledWith('clip-a', null)
+
+      // Steady state: a drawing clip reports nothing further.
+      onClipLoad.mockClear()
+      layer.draw(clip, ctx)
+      layer.draw(clip, ctx)
+      expect(onClipLoad).not.toHaveBeenCalled()
+    })
+
+    it('clears the clip on release', () => {
+      const onClipLoad = vi.fn()
+      layer = new VideoLayer(pool, () => provider, { onClipLoad })
+      const clip = makeClip()
+
+      layer.acquire(clip, ctx)
+      onClipLoad.mockClear()
+
+      layer.release('clip-a')
+      expect(onClipLoad).toHaveBeenCalledWith('clip-a', null)
+    })
+
+    it('reports an error when the container fails to open', async () => {
+      const onClipLoad = vi.fn()
+      const failing = makeMockProvider()
+      let settleOpen!: () => void
+      const opening = new Promise<void>((resolve) => {
+        settleOpen = resolve
+      })
+      // Mirrors StreamingFrameProducer: the open promise swallows its own
+      // rejection into `openError` and resolves.
+      Object.defineProperty(failing, 'openPromise', { get: () => opening })
+      let openError: Error | null = null
+      Object.defineProperty(failing, 'openError', { get: () => openError })
+
+      layer = new VideoLayer(pool, () => failing, { onClipLoad })
+      layer.acquire(makeClip(), ctx)
+      expect(onClipLoad).toHaveBeenCalledWith('clip-a', 'loading')
+
+      onClipLoad.mockClear()
+      openError = new Error('no video track')
+      settleOpen()
+      await opening
+
+      expect(onClipLoad).toHaveBeenCalledWith('clip-a', 'error')
+    })
+
+    it('watches the open promise once, not once per tick', () => {
+      const onClipLoad = vi.fn()
+      const watched = makeMockProvider()
+      const opening = Promise.resolve()
+      const then = vi.spyOn(opening, 'then')
+      Object.defineProperty(watched, 'openPromise', { get: () => opening })
+
+      layer = new VideoLayer(pool, () => watched, { onClipLoad })
+      const clip = makeClip()
+      layer.acquire(clip, ctx)
+      layer.acquire(clip, ctx)
+      layer.acquire(clip, ctx)
+
+      expect(then).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it('does not import decoder, PlaybackEngine, or React modules', () => {
     const __dirname = dirname(fileURLToPath(import.meta.url))
     const source = readFileSync(join(__dirname, '../layers/VideoLayer.ts'), 'utf8')

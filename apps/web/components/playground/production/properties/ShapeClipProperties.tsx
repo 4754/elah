@@ -5,8 +5,8 @@ import {
   useSelectionStore,
   useTracksStore,
   useTimelineEngine,
+  TEXT_ANIMATION_KINDS,
   type Clip,
-  type TextAnimationKind,
   type TextAnimation,
 } from '@elah/editor'
 import { cn } from '@/lib/utils'
@@ -18,7 +18,17 @@ import {
   PANEL,
   PanelHeader,
   mergeTransform,
+  clipTimecode,
+  readAnimationKind,
 } from './propertiesShared'
+
+/**
+ * Shapes offer every kind except the text-only ones. `spin` is excluded because
+ * no shape painter reads `transform.rotation`, so offering it would render a
+ * control that silently does nothing — see the catalogue in
+ * core/src/resolver/textAnimation.ts.
+ */
+const SHAPE_ANIMATION_KINDS = TEXT_ANIMATION_KINDS.filter((o) => o.appliesTo === 'both')
 
 type Tab = 'style' | 'transform' | 'animate'
 const TABS: { id: Tab; label: string }[] = [
@@ -58,7 +68,7 @@ export function ShapeClipProperties() {
     return (
       <div className={cn(PANEL, 'overflow-hidden')}>
         <PanelHeader />
-        <div className="flex-1 flex items-center justify-center p-6 text-center text-xs text-ed-text-muted">
+        <div className="flex-1 flex items-center justify-center p-6 text-center text-[13px] text-ed-text-muted">
           Select a shape clip to edit properties
         </div>
       </div>
@@ -72,8 +82,7 @@ export function ShapeClipProperties() {
     engine.updateClip(clip.id, clip.trackId, updates)
   }
 
-  const startSec = (clip.startFrame / 30).toFixed(0)
-  const endSec = ((clip.startFrame + clip.durationFrames) / 30).toFixed(0)
+  const fps = engine.getProject().fps
 
   const tf = mergeTransform(effective)
   const setTf = (patch: Partial<ReturnType<typeof mergeTransform>>) =>
@@ -82,7 +91,7 @@ export function ShapeClipProperties() {
 
   return (
     <div className={cn(PANEL, 'overflow-hidden')}>
-      <PanelHeader subtitle={`${clip.name} · 0:${startSec.padStart(2, '0')}–0:${endSec.padStart(2, '0')}`} />
+      <PanelHeader subtitle={clipTimecode(clip, fps)} />
 
       <div className="flex items-center gap-4 px-4 border-b border-ed-border shrink-0">
         {TABS.map((t) => (
@@ -91,7 +100,7 @@ export function ShapeClipProperties() {
             type="button"
             onClick={() => setTab(t.id)}
             className={cn(
-              'relative py-2.5 text-xs transition-colors',
+              'relative py-2.5 text-[13px] transition-colors',
               tab === t.id ? 'text-ed-text' : 'text-ed-text-muted hover:text-ed-text',
             )}
           >
@@ -229,42 +238,50 @@ export function ShapeClipProperties() {
         {tab === 'animate' && (
           <>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Fade In">
+              <Field label="Entry">
                 <select
                   value={effective.shapeAnimation?.in ?? 'none'}
                   onChange={(e) => {
-                    const val = e.target.value
+                    const val = readAnimationKind(e.target.value)
                     commit({
                       shapeAnimation: {
                         durationFrames: effective.shapeAnimation?.durationFrames ?? 15,
                         ...effective.shapeAnimation,
-                        in: val === 'none' ? undefined : (val as TextAnimationKind),
+                        in: val,
                       },
                     })
                   }}
                   className={cn(inputCls, 'cursor-pointer')}
                 >
                   <option value="none">None</option>
-                  <option value="fade">Fade</option>
+                  {SHAPE_ANIMATION_KINDS.map((option) => (
+                    <option key={option.kind} value={option.kind}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </Field>
-              <Field label="Fade Out">
+              <Field label="Exit">
                 <select
                   value={effective.shapeAnimation?.out ?? 'none'}
                   onChange={(e) => {
-                    const val = e.target.value
+                    const val = readAnimationKind(e.target.value)
                     commit({
                       shapeAnimation: {
                         durationFrames: effective.shapeAnimation?.durationFrames ?? 15,
                         ...effective.shapeAnimation,
-                        out: val === 'none' ? undefined : (val as TextAnimationKind),
+                        out: val,
                       },
                     })
                   }}
                   className={cn(inputCls, 'cursor-pointer')}
                 >
                   <option value="none">None</option>
-                  <option value="fade">Fade</option>
+                  {SHAPE_ANIMATION_KINDS.map((option) => (
+                    <option key={option.kind} value={option.kind}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </Field>
             </div>

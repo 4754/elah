@@ -107,7 +107,9 @@ export class GpuRenderer implements Renderer {
     if (this._options.probeLayer) {
       videoLayer = new FrameProbeLayer()
     } else {
-      this._videoLayer = new VideoLayer(this._texturePool, videoLayerArg)
+      this._videoLayer = new VideoLayer(this._texturePool, videoLayerArg, {
+        ...(this._options.onClipLoad ? { onClipLoad: this._options.onClipLoad } : {}),
+      })
       videoLayer = this._videoLayer
     }
 
@@ -288,6 +290,11 @@ export class GpuRenderer implements Renderer {
     this._fps = 0
     this._lastRenderDurationMs = 0
     this._noOpTicks = 0
+  }
+
+  /** True while the WebGL context is lost. Hosts should pause resolve/prewarm work. */
+  get isContextLost(): boolean {
+    return this._glCtx?.isLost ?? false
   }
 
   /** Exposed for tests: underlying video layer instance. */

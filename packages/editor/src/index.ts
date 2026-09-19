@@ -202,7 +202,13 @@ export type { ActionResult, ActionFailureReason } from '@elah/core'
 
 export { framesToTimecode, secondsToFrames, framesToSeconds, getTotalFrames } from '@elah/core'
 export { generateId } from '@elah/core'
-export { transformFromCoverRect } from '@elah/core'
+export {
+  transformFromContainRect,
+  transformFromCoverRect,
+  normalizeCrop,
+  FULL_CROP,
+} from '@elah/core'
+export type { CropRect } from '@elah/core'
 
 // --- Snapping / overlap helpers (for custom drag and trim interactions) ---
 export { snapFrame, buildSnapPoints, resolveOverlapEdgeSnap, clipsOverlap, DEFAULT_OVERLAP_TOLERANCE } from '@elah/core'

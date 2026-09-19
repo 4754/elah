@@ -135,11 +135,20 @@ const DEFAULT_MAX_IDLE_PROVIDERS = 4
 const IDLE_REARM_AFTER_FRACTION = 0.5
 
 /** Tuning knobs for provider retention. Injectable so tests can drive them. */
+export type VideoClipLoadState = 'loading' | 'error'
+
+/** Tuning knobs for provider retention. Injectable so tests can drive them. */
 export interface VideoLayerOptions {
   /** ms a refCount-0 provider stays warm before disposal. Default 20000. */
   idleDisposeMs?: number
   /** Max refCount-0 providers retained at once. Default 4. */
   maxIdleProviders?: number
+  /**
+   * Called when a clip starts loading, fails to open, or becomes drawable
+   * (`null`). Fires at clip-boundary events only — never per frame — so a React
+   * consumer can render a spinner without subscribing to the render loop.
+   */
+  onClipLoad?: (itemId: string, state: VideoClipLoadState | null) => void
 }
 
 /** A pending eviction deadline for one refCount-0 provider. */
@@ -160,6 +169,13 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
   private readonly _deps: VideoFrameProviderDeps | undefined
   private readonly _idleDisposeMs: number
   private readonly _maxIdleProviders: number
+  private readonly _onClipLoad: ((itemId: string, state: VideoClipLoadState | null) => void) | undefined
+  /**
+   * Clips whose provider's open promise already has a failure watcher attached.
+   * acquire() runs every tick a clip is in the scene; without this the same
+   * promise would collect a new `.then` sixty times a second.
+   */
+  private readonly _openWatchedItemIds = new Set<string>()
 
   private _program: ShaderProgram | null = null
   private _vao: WebGLVertexArrayObject | null = null
@@ -230,6 +246,7 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
     this._pool = pool
     this._idleDisposeMs = options?.idleDisposeMs ?? DEFAULT_IDLE_DISPOSE_MS
     this._maxIdleProviders = options?.maxIdleProviders ?? DEFAULT_MAX_IDLE_PROVIDERS
+    this._onClipLoad = options?.onClipLoad
     if (typeof providerFactoryOrDeps === 'function') {
       this._providerFactory = providerFactoryOrDeps
       this._deps = undefined
@@ -272,11 +289,51 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
 
     entry.refCount++
     entry.provider.markActive()
+
+    // Report before the first draw: a clip whose decoder is still opening has
+    // nothing on screen, and that is exactly the wait the user is looking at.
+    // draw() clears it the moment a frame uploads, so a warm provider is in
+    // 'loading' for one tick.
+    this._reportLoad(item.id, this._contentSizeByItemId.has(item.id) ? null : 'loading')
+    this._watchOpenFailure(item.id, entry)
+  }
+
+  /**
+   * Surface a failed container open as an error state on the clip.
+   *
+   * The open promise is fire-and-forget on the render path and swallows its own
+   * rejection into `openError`, so the only way to learn about the failure is to
+   * wait on it and then read the flag. Attached once per clip.
+   */
+  private _watchOpenFailure(itemId: string, entry: ProviderEntry): void {
+    if (this._onClipLoad === undefined) return
+    if (this._openWatchedItemIds.has(itemId)) return
+    // Read synchronously: StreamingFrameProducer nulls `openPromise` as soon as
+    // the first discontinuity consumes it, so a later read finds nothing.
+    const opening = entry.provider.openPromise
+    if (!opening) return
+
+    this._openWatchedItemIds.add(itemId)
+    void opening.then(() => {
+      // The clip may have been released and re-acquired against a different
+      // provider in the meantime; only the current one gets to speak for it.
+      if (this._providers.get(itemId) !== entry) return
+      if (entry.provider.openError) this._reportLoad(itemId, 'error')
+    })
+  }
+
+  private _reportLoad(itemId: string, state: VideoClipLoadState | null): void {
+    this._onClipLoad?.(itemId, state)
   }
 
   release(itemId: string): void {
     const src = this._srcByItemId.get(itemId)
     if (!src) return
+
+    // A clip that has left the scene has no loading state to report. Leaving
+    // one behind would keep the preview's spinner up over a clip that is no
+    // longer being drawn at all.
+    this._reportLoad(itemId, null)
 
     const texture = this._textures.get(itemId)
     if (texture?.hasContent) {
@@ -417,6 +474,9 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
       if (uploaded) {
         const width = 'displayWidth' in frame ? frame.displayWidth : frame.width
         const height = 'displayHeight' in frame ? frame.displayHeight : frame.height
+        // A content size appearing for the first time IS the first drawable
+        // frame for this clip — the moment the wait the user is watching ends.
+        if (!this._contentSizeByItemId.has(item.id)) this._reportLoad(item.id, null)
         this._contentSizeByItemId.set(item.id, { width, height })
         // First real frame for this clip — holdover is no longer needed.
         this._holdoverTexture?.dispose()

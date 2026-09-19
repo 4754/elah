@@ -48,6 +48,21 @@ export interface VideoFrameProvider {
 
   /** Release all resources. Provider must not be used after dispose. */
   dispose(): void
+
+  /**
+   * Resolves when the initial container open has settled — successfully or not.
+   * `null` once consumed, and absent on providers that have nothing to open
+   * (the synthetic/mock dev paths).
+   *
+   * The render path never awaits this. It exists so a caller outside the loop
+   * can tell "still opening" from "opened and decoding", which is what the
+   * preview's loading state is built on. Read it synchronously on acquire:
+   * StreamingFrameProducer clears it once the first discontinuity consumes it.
+   */
+  readonly openPromise?: Promise<void> | null
+
+  /** The error the initial open failed with, if it did. */
+  readonly openError?: Error | null
 }
 
 export interface MetricsHook {

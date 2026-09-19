@@ -3,18 +3,28 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
   type CSSProperties,
 } from 'react'
-import { GpuRenderer, PerfSummary } from '@elah/core'
+import { GpuRenderer } from '@elah/core'
 import { resolveTimeline } from '@elah/core'
-import { useTimelineEngine, usePlaybackEngine, useMediaLibraryStore, usePlaybackStore } from '@elah/react'
-import type { DemuxerFactory } from '@elah/core'
-import { AudioPlaybackController, preloadProjectImages, warmImageSrc, warmVideoSrc } from '@elah/core'
+import { useTimelineEngine, usePlaybackEngine } from '@elah/react'
+import type { Clip, DemuxerFactory } from '@elah/core'
+import {
+  AudioPlaybackController,
+  PerfSummary,
+  clipLoadStore,
+  preloadProjectImages,
+  warmImageSrc,
+  warmVideoSrc,
+} from '@elah/core'
+import { useMediaLibraryStore, usePlaybackStore } from '@elah/react'
 import type { AudioResolver } from '@elah/core'
 import { cn } from '@elah/timeline'
 import { TextOverlay } from './TextOverlay'
 import { ShapeOverlay } from './ShapeOverlay'
 import { MediaTransformOverlay } from './MediaTransformOverlay'
+import { PreviewLoadingOverlay } from './PreviewLoadingOverlay'
 import { TransitionOverlay, type TransitionOverlayHandle } from './TransitionOverlay'
 import { StageBorder } from './StageBorder'
 
@@ -95,6 +105,12 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
   const engine = useTimelineEngine()
   const playback = usePlaybackEngine()
 
+  // 'lost' shows a passive "recovering" notice while the context-loss watchdog
+  // runs; 'failed' offers a manual renderer remount (bump reloadKey → the mount
+  // effect below re-runs, disposing and recreating everything).
+  const [glState, setGlState] = useState<'ok' | 'lost' | 'failed'>('ok')
+  const [reloadKey, setReloadKey] = useState(0)
+
   useImperativeHandle(
     ref,
     (): PreviewHandle => ({
@@ -108,19 +124,40 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
     const container = containerRef.current
     if (!container) return
 
+    // Dirty flag gating the per-RAF work. While paused, the scene only changes
+    // when the playhead or the project does — re-resolving and re-rendering at
+    // 60 Hz regardless is pure GPU/CPU burn (GpuRenderer's Scene-identity
+    // fast-path never hits because resolveTimeline allocates a fresh Scene
+    // per call). Playback forces a full tick every frame.
+    let dirty = true
+    const markDirty = () => {
+      dirty = true
+    }
+
     const renderer = new GpuRenderer({
       probeLayer,
       demuxerFactory,
       preserveDrawingBuffer,
       ...(clearColor ? { clearColor } : {}),
+      onContextLost: () => setGlState('lost'),
+      onContextRestored: () => {
+        setGlState('ok')
+        markDirty()
+      },
+      onContextUnrecoverable: () => setGlState('failed'),
+      // Clip-boundary events only (see RendererOptions), so this is a handful
+      // of store writes per clip — not one per rendered frame.
+      onClipLoad: (clipId, state) => clipLoadStore.getState().set(clipId, state),
     })
     renderer.mount(container)
     renderer.setDebug(debug)
     rendererRef.current = renderer
+    setGlState('ok')
 
     const resize = () => {
       const dpr = window.devicePixelRatio ?? 1
       renderer.resize(container.clientWidth, container.clientHeight, dpr)
+      markDirty()
     }
     const observer = new ResizeObserver(resize)
     observer.observe(container)
@@ -136,15 +173,49 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
     // Warm the decode cache for remote audio (e.g. Freesound previews) and
     // images (e.g. Pexels/Pixabay) as soon as clips land on the timeline,
     // instead of waiting for first play/paint.
-    let warmAudio: (() => void) | null = null
-    const warmImages = () => preloadProjectImages(engine.getProject())
+    //
+    // Bound to the events that can actually introduce a source, not to
+    // 'change'. 'change' also fires on every pointermove of a transform drag
+    // (`previewClip`), and each one used to walk every clip on every track
+    // twice — once for images, once for audio — to warm caches that could not
+    // possibly have gained an entry from a clip being moved.
+    let warmAudio: ((clip?: Clip) => void) | null = null
+    let warmAudioOnLoad: (() => void) | null = null
+    const warmImages = (clip?: Clip) => {
+      if (clip) {
+        if (clip.type === 'image' && typeof clip.src === 'string') warmImageSrc(clip.src)
+        return
+      }
+      preloadProjectImages(engine.getProject())
+    }
+    // 'clip:updated' also fires per pointermove, but the per-clip branch above
+    // is one map lookup — and it is the only signal that catches a clip being
+    // repointed from a `blob:` URL to its hosted one after upload.
+    const warmImagesOnLoad = () => warmImages()
     warmImages()
-    engine.on('change', warmImages)
+    engine.on('clip:added', warmImages)
+    engine.on('clip:updated', warmImages)
+    engine.on('project:loaded', warmImagesOnLoad)
+
+    // Anything that can change the resolved Scene marks the loop dirty:
+    // project edits, and any playback-store change (seeks, scrub epoch bumps,
+    // play/pause). Store notifications are change-driven, not per-RAF.
+    engine.on('change', markDirty)
+    const unsubPlayback = usePlaybackStore.subscribe(markDirty)
 
     if (audio) {
-      warmAudio = () => audio.preloadProjectAudio()
+      warmAudio = (clip?: Clip) => {
+        if (clip) {
+          if (clip.type === 'audio' && typeof clip.src === 'string') audio.warmAudioSrc(clip.src)
+          return
+        }
+        audio.preloadProjectAudio()
+      }
+      warmAudioOnLoad = () => warmAudio?.()
       warmAudio()
-      engine.on('change', warmAudio)
+      engine.on('clip:added', warmAudio)
+      engine.on('clip:updated', warmAudio)
+      engine.on('project:loaded', warmAudioOnLoad)
     }
 
     // Also warm as soon as an asset is *registered* (e.g. clicked into the
@@ -174,6 +245,11 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
     // pushing the upcoming clips' playhead lets their decoders warm up first.
     // ~1s at 30fps comfortably covers a cold WebCodecs open + keyframe seek.
     const PREWARM_HORIZON_FRAMES = 30
+    // While paused, keep the decode horizon warm on a slow cadence (instead of
+    // per-RAF) so VideoLayer's idle-eviction re-arm still sees upcoming clips
+    // and Space-to-play doesn't start cold.
+    const PAUSED_PREWARM_INTERVAL_MS = 500
+    let lastPrewarmAt = 0
 
     // Silent until `__trace.on('PERF')`; see PerfSummary. Counts store
     // notifications alongside the tick cost, because a store that notifies on
@@ -183,11 +259,26 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
     const unsubPerfPlayback = usePlaybackStore.subscribe(() => perf.count('playbackNotify'))
     const countTracks = () => perf.count('engineChange')
     engine.on('change', countTracks)
-
     const tick = () => {
       rafId = requestAnimationFrame(tick)
+      // While the GL context is lost, resolving/prewarming only adds decode
+      // pressure that competes with recovery — skip everything.
+      if (renderer.isContextLost) return
 
+      const playing = usePlaybackStore.getState().isPlaying
       const now = performance.now()
+      if (!playing && !dirty) {
+        // Idle: no scene change possible; just keep the prewarm horizon warm.
+        if (now - lastPrewarmAt >= PAUSED_PREWARM_INTERVAL_MS) {
+          lastPrewarmAt = now
+          const frame = Math.floor(playback.getFrameAt())
+          const project = engine.getProject()
+          renderer.prewarm(resolveTimeline(frame + PREWARM_HORIZON_FRAMES, project))
+        }
+        return
+      }
+      dirty = false
+
       const frame = Math.floor(playback.getFrameAt())
       const project = engine.getProject()
       const scene = perf.measure('resolve', () => resolveTimeline(frame, project))
@@ -198,6 +289,7 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
       transitionOverlayRef.current?.update(scene)
       // Warm decoders for clips that will become active within the horizon so
       // image→video (and any cold) boundaries paint instantly instead of freezing.
+      lastPrewarmAt = now
       perf.measure('prewarm', () => {
         const prewarmScene = resolveTimeline(frame + PREWARM_HORIZON_FRAMES, project)
         renderer.prewarm(prewarmScene)
@@ -213,17 +305,28 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
     return () => {
       cancelAnimationFrame(rafId)
       observer.disconnect()
-      if (warmAudio) engine.off('change', warmAudio)
-      engine.off('change', warmImages)
+      if (warmAudio) {
+        engine.off('clip:added', warmAudio)
+        engine.off('clip:updated', warmAudio)
+      }
+      if (warmAudioOnLoad) engine.off('project:loaded', warmAudioOnLoad)
+      engine.off('clip:added', warmImages)
+      engine.off('clip:updated', warmImages)
+      engine.off('project:loaded', warmImagesOnLoad)
+      engine.off('change', markDirty)
+      unsubPlayback()
       unsubPerfPlayback()
       engine.off('change', countTracks)
       unsubMediaLibrary()
       audio?.destroy()
       renderer.dispose()
       rendererRef.current = null
+      // The store is module-scoped: a 'loading' entry left behind here would
+      // greet whatever preview mounts next with a spinner over nothing.
+      clipLoadStore.getState().clear()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, playback, demuxerFactory, debug, probeLayer, preserveDrawingBuffer, enableAudio, audioResolver])
+  }, [engine, playback, demuxerFactory, debug, probeLayer, preserveDrawingBuffer, enableAudio, audioResolver, reloadKey])
 
   return (
     <div
@@ -248,6 +351,37 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
 
       {/* Interactive text editing layer, painted above the WebGL canvas (zIndex 4). */}
       <TextOverlay />
+
+      {/* Spinner while a clip's decoder opens — the window in which the canvas
+          has nothing to paint and would otherwise just be black. */}
+      <PreviewLoadingOverlay />
+
+      {/* GPU context-loss recovery layer. 'lost' is transient (watchdog is
+          trying to restore); 'failed' needs a manual remount. */}
+      {glState !== 'ok' && (
+        <div
+          className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/70 text-white text-sm"
+          data-testid="preview-gl-recovery"
+        >
+          {glState === 'lost' ? (
+            <span>Recovering preview…</span>
+          ) : (
+            <>
+              <span>The preview stopped rendering (graphics context lost).</span>
+              <button
+                type="button"
+                className="rounded-md border border-white/30 bg-white/10 px-3 py-1.5 hover:bg-white/20"
+                onClick={() => {
+                  setGlState('ok')
+                  setReloadKey((k) => k + 1)
+                }}
+              >
+                Reload preview
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 })
