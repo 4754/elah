@@ -1,5 +1,5 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
-import type { InitialTrackConfig } from '@elah/core'
+import type { InitialTrackConfig, ProjectLoadedEvent } from '@elah/core'
 import {
   TimelineEngine,
   PlaybackEngine,
@@ -35,25 +35,56 @@ export function EditorProvider({
   initialTracks,
   children,
 }: EditorProviderProps) {
-  const engine = useMemo(
-    () =>
-      new TimelineEngine({
+  // Both engines are built together, and the restore→transport wire is attached
+  // here rather than in an effect below. That is not tidiness — it is the only
+  // place it works.
+  //
+  // The component that restores a stored document is a *descendant* of this
+  // provider (it needs the engine from this context), and React runs passive
+  // effects child-before-parent. An `engine.on('project:loaded', …)` in an
+  // effect here would therefore subscribe *after* the open's `loadProject` had
+  // already fired — so the one load the rewind was written for is the one it
+  // would miss, leaving the new project sharing the last one's playhead and, if
+  // that one was playing, starting itself.
+  const { engine, playback } = useMemo(
+    () => {
+      const engine = new TimelineEngine({
         fps,
         stage,
         defaultTrackHeight,
         maxHistorySize,
         initialTracks,
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  )
+      })
 
-  const playback = useMemo(
-    () =>
-      new PlaybackEngine({
+      const playback = new PlaybackEngine({
         fps,
         getTotalFrames: () => useTracksStore.getState().totalFrames,
-      }),
+      })
+
+      // Restore → transport.
+      //
+      // `engine.loadProject()` replaces the whole composition, which leaves the
+      // playhead pointing into a timeline that no longer exists — mid-play, over
+      // a different project. `TimelineEngine` has no reference to
+      // `PlaybackEngine` on purpose (it is Node-safe and RAF-free), so the two
+      // are joined here, where every other engine↔playback wire already lives.
+      //
+      // Both objects are moved, not just the engine: the store is the
+      // transport's source of truth for the rest of the app, is module-scoped
+      // (so it still holds the *previous* project's frame after a client-side
+      // navigation), and `PlaybackEngine.notify()` only pushes `currentFrame`
+      // into it when the value actually changed.
+      engine.on('project:loaded', ({ transport }: ProjectLoadedEvent) => {
+        if (transport !== 'rewind') return
+        playback.pause()
+        playback.seek(0)
+        const pb = usePlaybackStore.getState()
+        if (pb.isPlaying) pb.pause()
+        if (pb.currentFrame !== 0) pb.setCurrentFrame(0)
+      })
+
+      return { engine, playback }
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   )

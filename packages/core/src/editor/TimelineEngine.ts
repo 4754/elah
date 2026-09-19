@@ -637,9 +637,53 @@ export class TimelineEngine {
   }
 
   // ---------------------------------------------------------------------------
-  // Project loading
+  // Project loading (restore)
   // ---------------------------------------------------------------------------
 
+  /**
+   * Replace the whole composition with a stored one.
+   *
+   * This is the restore half of `getProject()`: what the editor calls when a
+   * saved document comes back from the server. It is deliberately *not* an
+   * edit —
+   *
+   *  - **Atomic.** Tracks, clips, transitions, stage, fps and master volume are
+   *    swapped in one assignment. No subscriber ever sees the old tracks beside
+   *    the new clips, which is the state every `clips[track.id]` lookup in the
+   *    app would read as `undefined`.
+   *  - **The new baseline.** History is dropped, not appended to. Undo after
+   *    opening a project must do nothing; walking back into the empty timeline
+   *    that existed for a few milliseconds before the document arrived would
+   *    look exactly like losing the project.
+   *  - **Stopped at the start.** The playhead belonged to the composition being
+   *    replaced. `'project:loaded'` carries the instruction, because
+   *    `PlaybackEngine` is a separate object that this one deliberately does not
+   *    know about; the composition layer wires the two together
+   *    (`EditorProvider`). Pass `transport: 'keep'` for a repair pass that
+   *    replaces references inside the composition already on screen, where a
+   *    jump to frame 0 would be an unexplained surprise.
+   *
+   * `project` must already be a valid `Project`. Anything arriving as JSON goes
+   * through {@link readProjectDocument} first — that is where an unreadable or
+   * too-new document is refused, and it is separate from this method so the
+   * refusal can be shown to the user before the editor's contents are thrown
+   * away.
+   *
+   * An in-progress `batch()` or drag is abandoned rather than merged: both
+   * describe edits to a composition that no longer exists.
+   *
+   * **`history: 'keep'` is the exception, and only one caller has it.** The
+   * media re-link (`relinkProjectMedia`) does not bring a new composition — it
+   * hands back the one already on screen with internal library references
+   * repaired, and it lands whenever the project's assets finish importing,
+   * which can be long after the open. Everything above stops being true for it:
+   * there is no earlier composition to protect undo from, the user's edits since
+   * the open are real history, and an open drag is a real gesture that still has
+   * a `commitInteraction()` coming. So that call keeps the stacks, the
+   * interaction snapshot and any open batch intact. (Entries already on the
+   * stacks still hold the pre-repair references; undoing past the repair costs a
+   * filmstrip, not work — and those ids are session-scoped anyway.)
+   */
   loadProject(
     project: Project,
     options?: { transport?: LoadProjectTransport; history?: LoadProjectHistory },
