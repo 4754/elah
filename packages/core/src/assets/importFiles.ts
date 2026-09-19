@@ -569,6 +569,23 @@ function scheduleAudioAnalysis(asset: MediaAsset): void {
     .catch(markSilent)
 }
 
+/**
+ * Regenerate thumbnails for an asset already in the library.
+ *
+ * Import is normally the only thing that makes thumbnails, because import is
+ * normally the only way an asset gets into the library. Restoring a saved
+ * composition is the exception: the library is rebuilt from a stored snapshot,
+ * and an entry whose thumbnails were never captured (or were captured before a
+ * failed decode) would otherwise show the timeline's grey placeholder forever.
+ *
+ * No-op for an unknown id or an audio asset, which has no thumbnail to make.
+ */
+export function scheduleThumbnailById(assetId: string): void {
+  const asset = mediaLibraryStore.getState().getAsset(assetId)
+  if (!asset) return
+  scheduleThumbnail(asset, DEFAULT_THUMBNAIL_MAX_DIM)
+}
+
 interface RegisterAssetInput {
   kind: MediaKind
   name: string

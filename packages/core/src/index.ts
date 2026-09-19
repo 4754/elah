@@ -26,10 +26,31 @@ export type {
   TransitionKind,
   TransitionEasing,
   TransitionDirection,
+  LoadProjectHistory,
+  LoadProjectTransport,
+  ProjectLoadedEvent,
 } from './types'
 
 // --- Engine ---
 export { TimelineEngine } from './editor/TimelineEngine'
+
+// --- Restore: stored document → Project ---
+export {
+  PROJECT_VERSION,
+  ProjectDocumentError,
+  readProjectDocument,
+  isReadableProjectDocument,
+  isRecoverableMediaSrc,
+  relinkProjectMedia,
+  missingMediaSummary,
+} from './editor/projectDocument'
+export type {
+  ProjectDocumentErrorCode,
+  ReadProjectDocumentOptions,
+  MediaClipType,
+  MissingMedia,
+  RelinkMediaResult,
+} from './editor/projectDocument'
 
 // --- Playback ---
 export { PlaybackEngine } from './playback/PlaybackEngine'
@@ -127,6 +148,10 @@ export {
   importFiles,
   importUrl,
   importBlob,
+  scheduleThumbnailById,
+  snapshotMediaLibrary,
+  hydrateMediaLibrary,
+  refreshMissingThumbnails,
   determineAssetHasAudio,
   hasAudioDetermined,
   probeHasAudio,
@@ -137,6 +162,9 @@ export type {
   DragMediaPayload,
   MediaLibraryState,
   MediaLibraryActions,
+  MediaLibrarySnapshotEntry,
+  HydrateMediaLibraryOptions,
+  HydrateMediaLibraryResult,
   ImportFilesOptions,
   ImportFilesResult,
   ImportUrlOptions,
@@ -187,8 +215,6 @@ export { framesToTimecode, secondsToFrames, framesToSeconds, getTotalFrames, cli
 export { generateId } from './utils/id'
 export { snapFrame, buildSnapPoints, resolveOverlapEdgeSnap, DEFAULT_OVERLAP_TOLERANCE } from './utils/snap'
 
-// --- Project serialization ---
-export { serializeProject, deserializeProject } from './project/serialization'
 
 // --- Export pipeline ---
 export { exportVideo } from './export'

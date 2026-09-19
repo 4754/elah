@@ -258,6 +258,16 @@ export interface Track {
   solo: boolean
   /** Linear gain multiplier for the track, 0..2. Default 1 (unity). */
   volume?: number
+  /** When true, the track cannot be removed by the user. */
+  protected?: boolean
+  /**
+   * When `'bottom'`, `addTrack` keeps this lane (and any other pinned-bottom
+   * lane) below every non-pinned track rather than appending new tracks
+   * after it — the Descript-style layout where video sits on top, freely
+   * added tracks land in the middle, and a fixed audio+subtitle bar stays at
+   * the very bottom regardless of insertion order.
+   */
+  pinned?: 'bottom'
 }
 
 /**
@@ -285,6 +295,12 @@ export interface InitialTrackConfig {
   kind: TrackKind
   /** Display name; falls back to a kind-based default when omitted. */
   name?: string
+  /** Height in pixels; falls back to the engine's defaultTrackHeight when omitted. */
+  height?: number
+  /** When true, the track cannot be removed by the user. */
+  protected?: boolean
+  /** See `Track.pinned`. */
+  pinned?: 'bottom'
 }
 
 /** Config passed when creating a TimelineEngine instance */
@@ -346,6 +362,37 @@ export type EngineEvent =
   | 'transition:added'
   | 'transition:removed'
   | 'history:change'
+  | 'project:loaded'
+
+/**
+ * What the playhead should do when a composition is loaded.
+ *
+ * `'rewind'` — opening or reloading a document: stop and return to frame 0,
+ * because the frame the user was on belonged to a composition that is gone.
+ * `'keep'` — a repair pass over the composition already on screen (see
+ * `relinkProjectMedia`), where moving the playhead would be an unexplained
+ * jump the user did not ask for.
+ */
+export type LoadProjectTransport = 'rewind' | 'keep'
+
+/**
+ * What undo/redo should do when a composition is loaded.
+ *
+ * `'reset'` — an open or a reload: the document that just arrived *is* the
+ * history's starting point, and ctrl+Z must not walk back into the empty
+ * timeline that existed before it landed.
+ * `'keep'` — a repair pass over the composition already on screen (see
+ * `relinkProjectMedia`), which lands an unpredictable stretch of time after the
+ * open. By then the user may have trimmed a clip, added a title, or be
+ * mid-drag; throwing their undo stack away to swap an internal reference would
+ * be a loss they never asked for and cannot explain.
+ */
+export type LoadProjectHistory = 'reset' | 'keep'
+
+export interface ProjectLoadedEvent {
+  project: Project
+  transport: LoadProjectTransport
+}
 
 export type EngineEventPayload = {
   change: Project
@@ -358,4 +405,5 @@ export type EngineEventPayload = {
   'transition:added': Transition
   'transition:removed': string
   'history:change': { canUndo: boolean; canRedo: boolean }
+  'project:loaded': ProjectLoadedEvent
 }

@@ -34,6 +34,13 @@ export interface MediaAsset {
   lastModified: number
   /** Epoch ms. Used for display order and tie-breaking. */
   addedAt: number
+  /**
+   * `'pending'` while metadata (duration/dimensions) is still being probed from
+   * a remote URL — `durationSec`/`width`/`height` hold provisional/fallback
+   * values until this flips to `'ready'`. Undefined (treated as `'ready'`) for
+   * every asset registered the normal, synchronously-probed way.
+   */
+  status?: 'pending' | 'ready'
 }
 
 /** MIME type used on `dataTransfer` for drags originating from the AssetPanel. */

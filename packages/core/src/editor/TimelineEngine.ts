@@ -4,6 +4,8 @@ import type {
   EngineEvent,
   EngineEventPayload,
   InitialTrackConfig,
+  LoadProjectHistory,
+  LoadProjectTransport,
   Project,
   TimelineConfig,
   Track,
@@ -53,7 +55,9 @@ function buildEmptyProject(
       kind: spec.kind,
       name: spec.name,
       order,
-      height: defaultTrackHeight,
+      height: spec.height ?? defaultTrackHeight,
+      protected: spec.protected,
+      pinned: spec.pinned,
     }),
   )
 
@@ -609,12 +613,30 @@ export class TimelineEngine {
   // Project loading
   // ---------------------------------------------------------------------------
 
-  loadProject(project: Project): void {
+  loadProject(
+    project: Project,
+    options?: { transport?: LoadProjectTransport; history?: LoadProjectHistory },
+  ): void {
+    if (options?.history !== 'keep') {
+      this.batchDepth = 0
+      this.batchPrev = null
+      this.batchDescription = null
+      this.interactionPrev = null
+      this.undoStack = []
+      this.redoStack = []
+    }
+
     this.project = project
-    this.undoStack = []
-    this.redoStack = []
+
+    // 'change' first, so anything that re-reads the engine from
+    // 'project:loaded' (the transport reset does) sees stores already synced to
+    // the composition it is resetting for.
     this.emit('change', this.project)
-    this.emit('history:change', { canUndo: false, canRedo: false })
+    this.emit('history:change', { canUndo: this.canUndo(), canRedo: this.canRedo() })
+    this.emit('project:loaded', {
+      project: this.project,
+      transport: options?.transport ?? 'rewind',
+    })
   }
 
   // ---------------------------------------------------------------------------
@@ -650,24 +672,34 @@ export class TimelineEngine {
     try {
       recipe()
     } catch (err) {
-      this.batchDepth--
+      this.batchDepth = Math.max(0, this.batchDepth - 1)
       if (this.batchDepth === 0) {
-        // Roll back any partial mutations from inner commits.
-        this.project = this.batchPrev!
+        // Roll back any partial mutations from inner commits — unless a
+        // loadProject inside the recipe already replaced the composition those
+        // mutations belonged to, in which case there is nothing to roll back to.
+        if (this.batchPrev !== null) this.project = this.batchPrev
         this.batchPrev = null
         this.batchDescription = null
       }
       throw err
     }
 
-    this.batchDepth--
+    // Clamped rather than decremented: a loadProject inside the recipe resets
+    // the depth, and a negative one would make the *next* batch think it is
+    // nested inside a transaction that no longer exists.
+    this.batchDepth = Math.max(0, this.batchDepth - 1)
     if (this.batchDepth > 0) return // nested batch — wait for outermost
 
-    const prev = this.batchPrev!
+    const prev = this.batchPrev
     const next = this.project
     const desc = this.batchDescription ?? 'Batch'
     this.batchPrev = null
     this.batchDescription = null
+
+    // The transaction was abandoned by a restore. Recording an entry now would
+    // put `undo` one step away from a composition that was thrown away — and
+    // with no snapshot to return to, that step leads nowhere at all.
+    if (prev === null) return
 
     if (next === prev) return // no net change — nothing to record
 

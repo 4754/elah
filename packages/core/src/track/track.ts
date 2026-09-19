@@ -6,6 +6,8 @@ export interface CreateTrackOptions {
   name?: string
   order?: number
   height?: number
+  protected?: boolean
+  pinned?: 'bottom'
 }
 
 /** Factory function for creating a new Track with safe defaults */
@@ -27,5 +29,7 @@ export function createTrack(options: CreateTrackOptions): Track {
     muted: false,
     solo: false,
     volume: 1,
+    protected: options.protected ?? false,
+    pinned: options.pinned,
   }
 }

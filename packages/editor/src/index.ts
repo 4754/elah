@@ -33,9 +33,30 @@ export type {
   TransitionKind,
   TransitionEasing,
   TransitionDirection,
+  LoadProjectHistory,
+  LoadProjectTransport,
+  ProjectLoadedEvent,
 } from '@elah/core'
 
 export { TimelineEngine } from '@elah/core'
+
+// --- Restore: a stored document back into the engine ---
+export {
+  PROJECT_VERSION,
+  ProjectDocumentError,
+  readProjectDocument,
+  isReadableProjectDocument,
+  isRecoverableMediaSrc,
+  relinkProjectMedia,
+  missingMediaSummary,
+} from '@elah/core'
+export type {
+  ProjectDocumentErrorCode,
+  ReadProjectDocumentOptions,
+  MediaClipType,
+  MissingMedia,
+  RelinkMediaResult,
+} from '@elah/core'
 export { PlaybackEngine } from '@elah/core'
 export type { PlaybackSnapshot, PlaybackEngineConfig } from '@elah/core'
 
@@ -102,6 +123,19 @@ export type {
 } from '@elah/core'
 export type { UseMediaLibraryApi } from '@elah/react'
 
+// --- Media library persistence (carrying thumbnails across a page load) ---
+export {
+  scheduleThumbnailById,
+  snapshotMediaLibrary,
+  hydrateMediaLibrary,
+  refreshMissingThumbnails,
+} from '@elah/core'
+export type {
+  MediaLibrarySnapshotEntry,
+  HydrateMediaLibraryOptions,
+  HydrateMediaLibraryResult,
+} from '@elah/core'
+
 // --- Store hooks (React) and the vanilla stores behind them ---
 export {
   useTracksStore,
@@ -158,8 +192,6 @@ export { transformFromCoverRect } from '@elah/core'
 // --- Snapping / overlap helpers (for custom drag and trim interactions) ---
 export { snapFrame, buildSnapPoints, resolveOverlapEdgeSnap, clipsOverlap, DEFAULT_OVERLAP_TOLERANCE } from '@elah/core'
 
-// --- Persistence ---
-export { serializeProject, deserializeProject } from '@elah/core'
 
 export { exportVideo } from '@elah/core'
 export { lazyExportVideo } from '@elah/core'
