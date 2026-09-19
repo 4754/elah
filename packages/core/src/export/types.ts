@@ -9,10 +9,11 @@ export interface ExportOptions {
   /** Target video bitrate in bits/s. Default 8 Mbps. */
   videoBitrate?: number
   /**
-   * Output height in pixels (e.g. 360, 480, 720, 1080). The output width is
-   * derived from the project stage's aspect ratio and rounded to an even
-   * number (required by most video codecs). Defaults to the stage's native
-   * height — no scaling.
+   * Target pixel count for the stage's *short* edge (e.g. 360, 480, 720,
+   * 1080) — matching how "1080p" means 1920x1080 landscape or 1080x1920
+   * portrait. The other edge is derived from the project stage's aspect ratio
+   * and rounded to an even number (required by most video codecs). Defaults
+   * to the stage's native short edge — no scaling.
    */
   outputHeight?: number
   /** Target audio bitrate in bits/s. Default 128 kbps. */

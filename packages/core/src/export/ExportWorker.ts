@@ -21,6 +21,7 @@
 import * as mb from 'mediabunny'
 
 import { trace, traceEnabled, enableChannels, type TraceChannel } from '../debug/trace'
+import { computeExportDimensions } from './outputDimensions'
 
 // ---------------------------------------------------------------------------
 // Logging helpers — routed through the channel-based tracer.
@@ -132,12 +133,9 @@ async function runExport(project: Project, options: ExportOptions, audio: Render
   const totalFrames = getTotalFrames(project.clips)
 
   // Scale the output canvas to the requested resolution while preserving the
-  // project stage's aspect ratio. Even dimensions are required by most video
-  // codecs (H.264/VP9 need even width/height for chroma subsampling).
-  const outputHeight = options.outputHeight ?? stageHeight
-  const scale = outputHeight / stageHeight
-  const width = Math.round((stageWidth * scale) / 2) * 2
-  const height = Math.round(outputHeight / 2) * 2
+  // project stage's aspect ratio — see computeExportDimensions for why this
+  // scales against the short edge rather than raw height.
+  const { width, height } = computeExportDimensions(stageWidth, stageHeight, options.outputHeight)
 
   xlog('run', 'starting', {
     stage: `${stageWidth}x${stageHeight}`,
