@@ -44,7 +44,12 @@ export function updateClip(
   }
 }
 
-/** Update track properties in place */
+/**
+ * Update track properties in place. When `order` is part of the update,
+ * renormalize every track's `order` to its rank afterward — a raw
+ * Object.assign can otherwise leave duplicate or non-contiguous order values
+ * reachable, which collapses two lanes onto the same resolver zIndex.
+ */
 export function updateTrack(
   draft: Draft<Project>,
   trackId: string,
@@ -53,4 +58,10 @@ export function updateTrack(
   const track = draft.tracks.find((t) => t.id === trackId)
   if (!track) return
   Object.assign(track, updates)
+  if (updates.order !== undefined) {
+    draft.tracks.sort((a, b) => a.order - b.order)
+    draft.tracks.forEach((t, index) => {
+      t.order = index
+    })
+  }
 }
