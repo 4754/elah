@@ -275,8 +275,13 @@ async function runExport(project: Project, options: ExportOptions, audio: Render
     // Pre-compute source timestamps for every export frame this clip covers.
     // Using +0.5 midpoint matches the preview's Math.round(PTS / usPerFrame)
     // convention and avoids off-by-one on sources with a different frame rate.
+    // `speed` (fast-forward/slow-down) scales how far the source advances per
+    // export frame — the timestamps stay monotonically increasing for any
+    // speed >= 0, so the sequential canvasesAtTimestamps() generator handles
+    // 2x/4x by naturally skipping source frames, with no re-seek required.
+    const speed = clip.speed ?? 1
     const sourceTimestamps = Array.from({ length: clip.durationFrames }, (_, i) =>
-      (clip.sourceStartFrame + i + 0.5) / fps,
+      (clip.sourceStartFrame + i * speed + 0.5) / fps,
     )
     clipDecoders.set(clip.id, {
       gen: sink.canvasesAtTimestamps(sourceTimestamps),

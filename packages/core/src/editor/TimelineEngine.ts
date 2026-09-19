@@ -470,17 +470,23 @@ export class TimelineEngine {
     if (!existing) return
 
     const isUnlimited = existing.type === 'text' || existing.type === 'shape' || existing.type === 'freehand'
+    // Every timeline frame of a speed-changed clip consumes `speed` source
+    // frames, so the source-window invariant becomes durationFrames * speed
+    // <= sourceDurationFrames. speed is always 1 for non-video clips (the UI
+    // never sets it), so this is a no-op there.
+    const speed = existing.speed ?? 1
 
-    const maxDuration = isUnlimited ? Infinity : existing.sourceDurationFrames
+    const maxDuration = isUnlimited ? Infinity : Math.floor(existing.sourceDurationFrames / speed)
     const clampedDuration = Math.min(maxDuration, Math.max(1, toFrame(durationFrames)))
 
     // For media clips, the left edge can't extend further left than the source
-    // has available frames (i.e., existing.sourceStartFrame frames to the left).
+    // has available frames (i.e., existing.sourceStartFrame / speed timeline
+    // frames to the left — at speed=1 this is the original 1:1 relationship).
     // Generated clips (text, shape, freehand) have no source constraint and are always allowed to grow left.
     const rawStart = Math.max(0, toFrame(startFrame))
     const minAllowedStart = isUnlimited
       ? 0
-      : Math.max(0, existing.startFrame - existing.sourceStartFrame)
+      : Math.max(0, existing.startFrame - Math.floor(existing.sourceStartFrame / speed))
     const newStart = Math.max(minAllowedStart, rawStart)
 
     // Reject if the trimmed range would overlap another clip on this track.
@@ -492,7 +498,7 @@ export class TimelineEngine {
     // Generated clips have no real source media, skip the source window adjustment.
     const sourceStartFrame = isUnlimited
       ? existing.sourceStartFrame
-      : Math.max(0, existing.sourceStartFrame + startDelta)
+      : Math.max(0, existing.sourceStartFrame + Math.round(startDelta * speed))
 
     this.commit((draft) => {
       updateClip(draft, clipId, trackId, {
@@ -502,6 +508,58 @@ export class TimelineEngine {
       })
       pruneOrphanedTransitions(draft)
     }, 'Trim clip')
+  }
+
+  /**
+   * Change a video clip's playback speed (e.g. 2x/4x fast-forward, or a
+   * slow-down < 1). Video only — clips on this timeline are audio-stripped,
+   * so there is no audio time-stretch concern; calling this on a non-video
+   * clip is a no-op.
+   *
+   * Recomputes `durationFrames` atomically with `speed` so the clip's
+   * on-timeline length always reflects how much of its trimmed source window
+   * it is currently consuming: `round(durationFrames * speed)` stays within
+   * `sourceDurationFrames`. `sourceStartFrame` / `sourceDurationFrames`
+   * (the trim window into the source, always at 1x) are untouched — only the
+   * RATE at which that window is consumed changes.
+   *
+   * Speeding up (speed > oldSpeed) always shrinks the clip in place — no
+   * overlap is possible. Slowing down grows the clip; if that would overlap
+   * the next clip on the track, growth is clamped to the gap before it (no
+   * ripple — matches trimClip's overlap behavior) rather than growing into it.
+   */
+  setClipSpeed(clipId: string, trackId: string, speed: number): void {
+    if (this.isTrackLocked(trackId)) return
+    const trackClips = this.project.clips[trackId]
+    const existing = trackClips?.find((c) => c.id === clipId)
+    if (!existing || existing.type !== 'video') return
+
+    const clampedSpeed = Math.max(0.25, Math.min(4, speed))
+    const oldSpeed = existing.speed ?? 1
+    if (clampedSpeed === oldSpeed) return
+
+    const maxDuration = Math.max(1, Math.floor(existing.sourceDurationFrames / clampedSpeed))
+    let newDuration = Math.min(
+      maxDuration,
+      Math.max(1, Math.round((existing.durationFrames * oldSpeed) / clampedSpeed)),
+    )
+
+    // Growing (slow-down): never ripple into the next clip — clamp to the
+    // gap in front of it instead, mirroring trimClip's silent-reject-via-clamp
+    // behavior rather than throwing on overlap.
+    if (newDuration > existing.durationFrames) {
+      const candidate = { startFrame: existing.startFrame, durationFrames: newDuration }
+      const overlaps = findOverlaps(trackClips, candidate, clipId)
+      if (overlaps.length > 0) {
+        const nearestStart = Math.min(...overlaps.map((c) => c.startFrame))
+        newDuration = Math.max(1, nearestStart - existing.startFrame)
+      }
+    }
+
+    this.commit((draft) => {
+      updateClip(draft, clipId, trackId, { speed: clampedSpeed, durationFrames: newDuration })
+      pruneOrphanedTransitions(draft)
+    }, 'Change clip speed')
   }
 
   /** The left half keeps the original clip id; returns null when atFrame isn't strictly inside the clip. */

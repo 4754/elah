@@ -36,6 +36,23 @@ function findClipById(
 }
 
 /**
+ * Maps a timeline frame to the source-asset frame the clip should show,
+ * honoring `clip.speed` (video clips only in practice — other clip types
+ * never set it, so this is a no-op for them via the `?? 1` default).
+ *
+ * `Math.floor`, not `Math.round`: floor is monotonic in `frame` for any
+ * speed, and — combined with TimelineEngine.setClipSpeed's invariant
+ * `durationFrames * speed <= sourceDurationFrames` — guarantees the last
+ * timeline frame of the clip never maps past the end of its trim window.
+ * `Math.round` can overshoot by one frame at that boundary.
+ */
+function sourceFrameFor(clip: Clip, frame: number): number {
+  const speed = clip.speed ?? 1
+  const localFrame = frame - clip.startFrame
+  return Math.floor(localFrame * speed) + clip.sourceStartFrame
+}
+
+/**
  * resolveTimeline — pure, deterministic frame resolver.
  *
  * Given a frame number and the current project state, returns a Scene
@@ -132,7 +149,7 @@ export function resolveTimeline(frame: number, project: Project): Scene {
       if (frame >= clip.startFrame + clip.durationFrames) continue
 
       // How far into the source asset we are at this frame.
-      const sourceFrame = frame - clip.startFrame + clip.sourceStartFrame
+      const sourceFrame = sourceFrameFor(clip, frame)
       const opacity = clip.opacity ?? 1
       const baseVolume = clip.volume ?? 1
       // Fold track gain into effective volume; mute zeroes both.
