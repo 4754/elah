@@ -11,6 +11,7 @@ import {
   Minus,
   ChevronDown,
   Music,
+  Film,
 } from 'lucide-react'
 import {
   useTracksStore,
@@ -53,6 +54,17 @@ export const TimelineControls = memo(function TimelineControls({
   const hasSelection = useSelectionStore((s) => s.selectedClipIds.size === 1)
   const [addOpen, setAddOpen] = useState(false)
 
+  // Anchored zoom keeps the playhead (or viewport center) fixed while the
+  // scale changes; raw setZoom is only the fallback before the timeline mounts.
+  const zoomTo = useCallback(
+    (next: number) => {
+      const handle = timelineRef.current
+      if (handle?.zoomAtAnchor) handle.zoomAtAnchor(next)
+      else setZoom(next)
+    },
+    [timelineRef, setZoom],
+  )
+
   const handleDeleteSelected = useCallback(() => {
     const ids = useSelectionStore.getState().selectedClipIds
     if (ids.size !== 1) return
@@ -88,10 +100,15 @@ export const TimelineControls = memo(function TimelineControls({
     engine.addTrack('audio', { name: `Audio ${n}` })
   }, [engine])
 
+  const addVideoTrack = useCallback(() => {
+    const n = useTracksStore.getState().tracks.filter((t) => t.kind === 'video').length + 1
+    engine.addTrack('video', { name: `Video ${n}` })
+  }, [engine])
+
   // Ghost toolbar buttons (flat icons, matching the Figma). Compact swaps the
   // 28px targets for 36px ones — the minimum comfortable touch size here.
   const ghostBtn = cn(
-    'inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs text-ed-text-muted hover:text-ed-text hover:bg-ed-elevated transition-colors cursor-pointer',
+    'inline-flex items-center gap-1.5 px-2 py-1 rounded text-[13px] text-ed-text-muted hover:text-ed-text hover:bg-ed-elevated transition-colors cursor-pointer',
     compact && 'h-9 px-2.5',
   )
   const ghostIcon = cn(
@@ -125,15 +142,22 @@ export const TimelineControls = memo(function TimelineControls({
               <div className="absolute left-0 top-full mt-1 z-50 min-w-[150px] rounded-md border border-ed-border bg-ed-elevated py-1 shadow-[var(--elah-menu-shadow)]">
                 <button
                   type="button"
+                  onClick={() => { addVideoTrack(); setAddOpen(false) }}
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-ed-text-muted hover:text-ed-text hover:bg-ed-highest transition-colors"
+                >
+                  <Film size={14} /> Video Track
+                </button>
+                <button
+                  type="button"
                   onClick={() => { addAudioTrack(); setAddOpen(false) }}
-                  className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-ed-text-muted hover:text-ed-text hover:bg-ed-highest transition-colors"
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-ed-text-muted hover:text-ed-text hover:bg-ed-highest transition-colors"
                 >
                   <Music size={14} /> Audio Track
                 </button>
                 <button
                   type="button"
                   onClick={() => { addTextTrack(); setAddOpen(false) }}
-                  className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-ed-text-muted hover:text-ed-text hover:bg-ed-highest transition-colors"
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-ed-text-muted hover:text-ed-text hover:bg-ed-highest transition-colors"
                 >
                   <TypeIcon size={14} /> Text Track
                 </button>
@@ -177,7 +201,7 @@ export const TimelineControls = memo(function TimelineControls({
           type="button"
           className={ghostIcon}
           title="Zoom out"
-          onClick={() => setZoom(sliderToZoom(Math.max(0, zoomToSlider(zoom) - 0.08)))}
+          onClick={() => zoomTo(sliderToZoom(Math.max(0, zoomToSlider(zoom) - 0.08)))}
         >
           <Minus size={14} />
         </button>
@@ -189,14 +213,14 @@ export const TimelineControls = memo(function TimelineControls({
             max={1}
             step={0.001}
             value={zoomToSlider(zoom)}
-            onChange={(e) => setZoom(sliderToZoom(Number(e.target.value)))}
+            onChange={(e) => zoomTo(sliderToZoom(Number(e.target.value)))}
           />
         )}
         <button
           type="button"
           className={ghostIcon}
           title="Zoom in"
-          onClick={() => setZoom(sliderToZoom(Math.min(1, zoomToSlider(zoom) + 0.08)))}
+          onClick={() => zoomTo(sliderToZoom(Math.min(1, zoomToSlider(zoom) + 0.08)))}
         >
           <Plus size={14} />
         </button>
