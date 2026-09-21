@@ -184,6 +184,7 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
   private readonly _providers = new Map<string, ProviderEntry>()
   private readonly _textures = new Map<string, VideoTexture>()
   private readonly _srcByItemId = new Map<string, string>()
+  private readonly _providerSrcByItemId = new Map<string, string>()
   /**
    * Item IDs whose provider was created by prewarm() ahead of the clip becoming
    * active — the decoder is opening/decoding but the clip is NOT yet drawn.
@@ -267,14 +268,7 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
     // Keyed by clip ID, not src: each clip owns an independent
     // StreamingFrameProducer so that copy-pasted clips (same src, different
     // startFrame) never share a playhead and cause backwards-seek stalls.
-    let entry = this._providers.get(item.id)
-    if (!entry) {
-      const provider = this._deps
-        ? createVideoFrameProvider(item.src, { ...this._deps, fps: ctx.fps })
-        : this._providerFactory(item.src)
-      entry = { provider, refCount: 0 }
-      this._providers.set(item.id, entry)
-    }
+    const entry = this._ensureProvider(item, ctx)
 
     // Promote a prewarmed provider to a drawn clip: it's no longer prewarm's to
     // idle/dispose — the draw lifecycle (refCount + release) now owns it. Its
@@ -324,6 +318,33 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
 
   private _reportLoad(itemId: string, state: VideoClipLoadState | null): void {
     this._onClipLoad?.(itemId, state)
+  }
+
+  private _ensureProvider(item: ActiveVideoClip, ctx: LayerContext): ProviderEntry {
+    let entry = this._providers.get(item.id)
+    const currentSrc = this._providerSrcByItemId.get(item.id)
+    if (entry && currentSrc !== item.src) {
+      this._cancelIdleEviction(item.id)
+      entry.provider.dispose()
+      this._providers.delete(item.id)
+      this._providerSrcByItemId.delete(item.id)
+      this._openWatchedItemIds.delete(item.id)
+      this._contentSizeByItemId.delete(item.id)
+      this._textures.get(item.id)?.dispose()
+      this._textures.delete(item.id)
+      entry = undefined
+    }
+
+    if (!entry) {
+      const provider = this._deps
+        ? createVideoFrameProvider(item.src, { ...this._deps, fps: ctx.fps })
+        : this._providerFactory(item.src)
+      entry = { provider, refCount: 0 }
+      this._providers.set(item.id, entry)
+      this._providerSrcByItemId.set(item.id, item.src)
+    }
+
+    return entry
   }
 
   release(itemId: string): void {
@@ -392,44 +413,20 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
     const horizonIds = new Set(upcoming.map((item) => item.id))
 
     for (const item of upcoming) {
-      let entry = this._providers.get(item.id)
-      if (!entry) {
-        // Never seen this clip — create its provider cold and mark it prewarmed.
-        const provider = this._deps
-          ? createVideoFrameProvider(item.src, { ...this._deps, fps: ctx.fps })
-          : this._providerFactory(item.src)
-        entry = { provider, refCount: 0 }
-        this._providers.set(item.id, entry)
+      const isNewOrChanged =
+        !this._providers.has(item.id) ||
+        this._providerSrcByItemId.get(item.id) !== item.src
+
+      const entry = this._ensureProvider(item, ctx)
+
+      if (isNewOrChanged) {
         this._prewarmedItemIds.add(item.id)
-        provider.markActive()
-        // Arm a deadline on this path too. Without it, the scrub-away sweep at
-        // the bottom of this method is the provider's ONLY reclaim path — and
-        // that sweep only runs while prewarm() keeps being called. Editor
-        // paused, tab hidden, GpuRenderer.prewarm early-returning on !_mounted
-        // or a lost context: the loop stops, the sweep never fires again, and
-        // every provider prewarm ever created sits on a live decoder and a full
-        // frame cache for the rest of the session. This is also what puts these
-        // providers under `maxIdleProviders` at all — before, neither knob
-        // applied to them.
+        entry.provider.markActive()
         this._scheduleIdleEviction(item.id, horizonIds)
       } else if (entry.refCount > 0) {
-        // Already an active, drawn clip — draw() is driving its playhead. Leave
-        // it alone; pushing a future playhead here would seek it off the frame
-        // being drawn this tick.
         continue
       } else {
-        // A refCount-0 provider still inside the horizon: either released by a
-        // clip the user scrubbed back over, or prewarmed on an earlier tick and
-        // not yet drawn. Either way it is being actively re-warmed below, so its
-        // producer must not be left reporting 'idle' — markIdle()/markActive()
-        // only juggle a timer into an unset callback today, but that is a
-        // property of the current provider, not a contract.
         entry.provider.markActive()
-        // Push the deadline out so the timer armed at release (or at prewarm
-        // creation) does not dispose the very provider we are re-warming.
-        // Guarded: prewarm runs per RAF and re-arming is not free. Re-scheduling
-        // re-inserts rather than grows the map, so it cannot push another idle
-        // provider over the cap.
         if (this._shouldRearmIdleEviction(item.id)) {
           this._scheduleIdleEviction(item.id, horizonIds)
         }
@@ -452,8 +449,16 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
   draw(item: ActiveVideoClip, ctx: LayerContext): void {
     this._gl = ctx.gl
 
-    const texture = this._textures.get(item.id)
-    const entry = this._providers.get(item.id)
+    let texture = this._textures.get(item.id)
+    let entry = this._providers.get(item.id)
+    const currentSrc = this._providerSrcByItemId.get(item.id)
+    if (!entry || currentSrc !== item.src) {
+      entry = this._ensureProvider(item, ctx)
+      if (!texture) {
+        texture = new VideoTexture(this._pool)
+        this._textures.set(item.id, texture)
+      }
+    }
     if (!texture || !entry) return
 
     this._lastDrawFrameByItemId.set(item.id, ctx.frame)
@@ -548,6 +553,7 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
     }
     this._textures.clear()
     this._srcByItemId.clear()
+    this._providerSrcByItemId.clear()
     this._contentSizeByItemId.clear()
     this._lastDrawFrameByItemId.clear()
     this._holdoverTexture?.dispose()
@@ -773,6 +779,7 @@ export class VideoLayer implements Layer<ActiveVideoClip> {
     entry.provider.dispose()
     this._providers.delete(itemId)
     this._srcByItemId.delete(itemId)
+    this._providerSrcByItemId.delete(itemId)
     this._prewarmedItemIds.delete(itemId)
   }
 }

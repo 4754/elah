@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react'
 import {
   relinkProjectMedia,
+  scheduleThumbnailById,
   useMediaLibraryStore,
   useTimelineEngine,
   type Project as EditorDocument,
@@ -17,6 +18,7 @@ import {
 import { DEFAULT_TRACK_HEIGHT } from './trackConstants'
 import { useProjectSaveStore } from './projectSave.store'
 import { referencedSrcsOf, useMediaLibrarySnapshot } from './useMediaLibrarySnapshot'
+import { getMediaBlob, getMediaRecord, getAllStoredMediaIds } from '@/lib/media-file-storage'
 
 /**
  * Keeps the standalone `/editor` timeline across a refresh, in `localStorage`.
@@ -105,34 +107,146 @@ export function LocalProjectBridge() {
     autosaveRef.current = autosave
 
     let live = true
+    let projectLoaded = !restored
 
     if (restored) {
-      engine.loadProject(restored)
-      // Named immediately from the document alone, before the library is back:
-      // the clips whose `src` can never resolve are knowable without it, and
-      // the user should be told rather than left with silent black rectangles.
-      setMissingMedia(relinkProjectMedia(restored, mediaLibraryAssets()).missing)
-
-      // Then the library itself, from the snapshot written during the session
-      // that saved this composition. Without it every clip comes back to a grey
-      // placeholder where its filmstrip was — the library is module-scoped and
-      // starts empty, and nothing else in a standalone editor refills it.
-      void hydrate(referencedSrcsOf(restored)).then(() => {
+      void (async () => {
+        // 1. Hydrate the library from the snapshot written during the session
+        // that saved this composition.
+        await hydrate(referencedSrcsOf(restored))
         if (!live) return
-        const before = engine.getProject()
-        const { project: repaired, missing } = relinkProjectMedia(before, mediaLibraryAssets())
-        if (repaired !== before) {
-          // Rebase before the load, and keep transport + history: this is a
-          // cosmetic reference repair, not an edit. See the long note on
-          // `ProjectDocumentBridge.relink`, which this mirrors deliberately.
-          autosave.rebase(repaired)
-          engine.loadProject(repaired, { transport: 'keep', history: 'keep' })
+
+        // 2. Recover stored Blobs from IndexedDB and mint fresh object URLs for this session
+        const initialAssets = useMediaLibraryStore.getState().assets
+        const restoredBlobSrcs = new Map<string, string>()
+        const assetIdByOldSrc = new Map<string, string>()
+        const recoveredClipIds = new Set<string>()
+
+        for (const asset of Object.values(initialAssets)) {
+          const blob = await getMediaBlob(asset.id)
+          if (blob) {
+            const freshUrl = URL.createObjectURL(blob)
+            restoredBlobSrcs.set(asset.src, freshUrl)
+            assetIdByOldSrc.set(asset.src, asset.id)
+            useMediaLibraryStore.getState().updateAsset(asset.id, { src: freshUrl })
+            scheduleThumbnailById(asset.id)
+          }
         }
-        setMissingMedia(missing)
-      })
+
+        // Also check any stored blobs in IndexedDB that might not yet be in the store snapshot
+        const storedIds = await getAllStoredMediaIds()
+        for (const id of storedIds) {
+          let asset = useMediaLibraryStore.getState().assets[id]
+          const record = await getMediaRecord(id)
+          if (record && record.blob) {
+            const freshUrl = URL.createObjectURL(record.blob)
+            restoredBlobSrcs.set(id, freshUrl)
+
+            if (!asset) {
+              const kind = record.type?.startsWith('video/')
+                ? 'video'
+                : record.type?.startsWith('audio/')
+                  ? 'audio'
+                  : 'image'
+              useMediaLibraryStore.getState().addAsset({
+                id,
+                kind,
+                name: record.name || 'Uploaded Media',
+                src: freshUrl,
+                status: 'ready',
+                durationSec: 0,
+                byteSize: record.blob.size || 0,
+                lastModified: (record.blob as File).lastModified || record.savedAt || Date.now(),
+                addedAt: record.savedAt || Date.now(),
+              })
+              asset = useMediaLibraryStore.getState().assets[id]
+            }
+
+            scheduleThumbnailById(id)
+          }
+        }
+
+        // 3. Pre-repair restored project document with fresh URLs and linked assetIds BEFORE engine load
+        const updatedAssets = useMediaLibraryStore.getState().assets
+        const repairedClips: Record<string, (typeof restored.clips)[string]> = {}
+        for (const [trackId, clips] of Object.entries(restored.clips)) {
+          repairedClips[trackId] = clips.map((clip) => {
+            let newSrc = clip.src
+            let assetId = clip.assetId
+
+            if (typeof clip.src === 'string' && restoredBlobSrcs.has(clip.src)) {
+              newSrc = restoredBlobSrcs.get(clip.src)!
+              if (!assetId && assetIdByOldSrc.has(clip.src)) {
+                assetId = assetIdByOldSrc.get(clip.src)
+              }
+              recoveredClipIds.add(clip.id)
+            } else if (clip.assetId) {
+              const fresh =
+                updatedAssets[clip.assetId]?.src ||
+                (restoredBlobSrcs.has(clip.assetId) ? restoredBlobSrcs.get(clip.assetId) : undefined)
+              if (fresh) {
+                newSrc = fresh
+                recoveredClipIds.add(clip.id)
+              }
+            }
+
+            // Fallback: If clip has no assetId, match by src or name in updatedAssets
+            if (!assetId) {
+              const matched = Object.values(updatedAssets).find(
+                (a) => a.src === clip.src || (a.name === clip.name && a.kind === clip.type),
+              )
+              if (matched) {
+                assetId = matched.id
+                if (!newSrc || newSrc.startsWith('blob:')) {
+                  newSrc = matched.src
+                }
+                recoveredClipIds.add(clip.id)
+              }
+            }
+
+            return {
+              ...clip,
+              src: newSrc,
+              ...(assetId ? { assetId } : {}),
+            }
+          })
+        }
+
+        const projectToLoad: EditorDocument = {
+          ...restored,
+          clips: repairedClips,
+        }
+
+        if (!live) return
+
+        // 4. Load the repaired project directly into the engine with working URLs
+        engine.loadProject(projectToLoad)
+        autosave.rebase(projectToLoad)
+        projectLoaded = true
+
+        const { missing } = relinkProjectMedia(projectToLoad, mediaLibraryAssets())
+        // Clips successfully recovered from IndexedDB are no longer missing
+        const actualMissing = missing.filter((m) => !recoveredClipIds.has(m.clipId))
+        setMissingMedia(actualMissing)
+      })()
     }
 
-    const onChange = () => autosave.schedule(engine.getProject())
+    const onChange = () => {
+      if (!projectLoaded) return
+      const current = engine.getProject()
+      autosave.schedule(current)
+      const missing = useProjectSaveStore.getState().missingMedia
+      if (missing.length > 0) {
+        const remainingClipIds = new Set<string>()
+        for (const bucket of Object.values(current.clips)) {
+          for (const clip of bucket) remainingClipIds.add(clip.id)
+        }
+        const nextMissing = missing.filter((m) => remainingClipIds.has(m.clipId))
+        if (nextMissing.length !== missing.length) {
+          setMissingMedia(nextMissing)
+        }
+      }
+    }
     engine.on('change', onChange)
 
     return () => {

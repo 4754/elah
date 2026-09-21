@@ -443,6 +443,32 @@ describe('VideoLayer', () => {
 
       expect(then).toHaveBeenCalledTimes(1)
     })
+
+    it('hot-swaps provider and disposes old one when clip src changes', () => {
+      const providersCreated: Array<{ src: string; provider: ReturnType<typeof makeMockProvider> }> = []
+      const factory = (src: string) => {
+        const provider = makeMockProvider()
+        providersCreated.push({ src, provider })
+        return provider
+      }
+
+      layer = new VideoLayer(pool, factory)
+      const clipV1 = makeClip({ id: 'clip-1', src: 'blob:http://localhost/old-blob' })
+      layer.acquire(clipV1, ctx)
+
+      expect(providersCreated).toHaveLength(1)
+      expect(providersCreated[0].src).toBe('blob:http://localhost/old-blob')
+      const firstProvider = providersCreated[0].provider
+
+      // Now clip's src is updated (e.g. from IndexedDB recovery)
+      const clipV2 = makeClip({ id: 'clip-1', src: 'blob:http://localhost/fresh-blob' })
+      layer.acquire(clipV2, ctx)
+
+      expect(firstProvider.dispose).toHaveBeenCalledTimes(1)
+      expect(providersCreated).toHaveLength(2)
+      expect(providersCreated[1].src).toBe('blob:http://localhost/fresh-blob')
+      expect(layer.getProviderForItemId('clip-1')).toBe(providersCreated[1].provider)
+    })
   })
 
   it('does not import decoder, PlaybackEngine, or React modules', () => {

@@ -43,6 +43,7 @@ import { PixabayResults } from './PixabayResults'
 import { PexelsResults } from './PexelsResults'
 import { FreesoundResults } from './FreesoundResults'
 import { ProgressBar } from './ai/ProgressBar'
+import { saveMediaBlob, deleteMediaBlob } from '@/lib/media-file-storage'
 
 export type PanelMode = 'stock' | 'photos' | 'audio'
 
@@ -206,6 +207,7 @@ function AssetCard({
           onClick={(e) => {
             e.stopPropagation()
             removeAsset(asset.id)
+            void deleteMediaBlob(asset.id)
           }}
           title="Remove from library"
           className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded bg-black/60 text-white/80 opacity-0 transition-opacity hover:text-white group-hover:opacity-100"
@@ -330,7 +332,13 @@ export function MediaPanel({ style, mode = 'stock' }: { style?: React.CSSPropert
     // so the extension is the only thing that distinguishes them.
     const toConvert = picked.filter((f) => isImageFile(f) && needsJpegConversion(f))
     if (toConvert.length === 0) {
-      await importFiles(picked)
+      const result = await importFiles(picked)
+      for (const asset of result.imported) {
+        const file = picked.find(
+          (f) => f.name === asset.name && f.size === asset.byteSize && f.lastModified === asset.lastModified,
+        )
+        if (file) void saveMediaBlob(asset.id, file, { name: file.name, type: file.type })
+      }
       return
     }
 
@@ -349,7 +357,14 @@ export function MediaPanel({ style, mode = 'stock' }: { style?: React.CSSPropert
           }
         }),
       )
-      await importFiles(prepared.filter((f): f is File => f !== null))
+      const validFiles = prepared.filter((f): f is File => f !== null)
+      const result = await importFiles(validFiles)
+      for (const asset of result.imported) {
+        const file = validFiles.find(
+          (f) => f.name === asset.name && f.size === asset.byteSize && f.lastModified === asset.lastModified,
+        )
+        if (file) void saveMediaBlob(asset.id, file, { name: file.name, type: file.type })
+      }
     } finally {
       setConverting(0)
     }

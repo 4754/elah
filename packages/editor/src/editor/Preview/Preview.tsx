@@ -267,7 +267,8 @@ export const Preview = forwardRef<PreviewHandle, PreviewProps>(function Preview(
 
       const playing = usePlaybackStore.getState().isPlaying
       const now = performance.now()
-      if (!playing && !dirty) {
+      const hasLoading = Object.values(clipLoadStore.getState().byClipId).some((s) => s === 'loading')
+      if (!playing && !dirty && !hasLoading) {
         // Idle: no scene change possible; just keep the prewarm horizon warm.
         if (now - lastPrewarmAt >= PAUSED_PREWARM_INTERVAL_MS) {
           lastPrewarmAt = now
