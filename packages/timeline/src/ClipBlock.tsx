@@ -808,18 +808,20 @@ export const ClipBlock = memo(function ClipBlock({
             onMouseDown={closeCtxMenu}
           />
           <div
+            className="elah-root"
             style={{
               position: 'fixed',
               top: ctxMenu.y,
               left: ctxMenu.x,
               zIndex: 9999,
-              background: `var(--elah-menu-bg)`,
-              border: `1px solid var(--elah-menu-border)`,
+              background: 'var(--elah-menu-bg)',
+              border: '1px solid var(--elah-menu-border)',
               borderRadius: 6,
               padding: '4px 0',
               minWidth: 140,
-              boxShadow: `var(--elah-menu-shadow)`,
-              fontFamily: 'sans-serif',
+              boxShadow: 'var(--elah-menu-shadow)',
+              fontFamily: 'var(--elah-font-ui, sans-serif)',
+              color: 'var(--elah-text)',
             }}
           >
             {clip.type === 'video' && (
@@ -835,15 +837,15 @@ export const ClipBlock = memo(function ClipBlock({
                     width: '100%',
                     padding: '7px 14px',
                     textAlign: 'left',
-                    background: speedMenuOpen ? 'var(--elah-menu-item-hover-bg, var(--elah-danger-bg-hover))' : 'none',
+                    background: speedMenuOpen ? 'var(--elah-bg-elevated)' : 'none',
                     border: 'none',
-                    color: 'var(--elah-menu-text, inherit)',
+                    color: 'var(--elah-text)',
                     fontSize: 13,
                     cursor: 'pointer',
                     letterSpacing: '0.01em',
                   }}
                   onMouseEnter={(e) => {
-                    ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--elah-danger-bg-hover)'
+                    ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--elah-bg-elevated)'
                   }}
                   onMouseLeave={(e) => {
                     if (!speedMenuOpen) (e.currentTarget as HTMLButtonElement).style.background = 'none'
@@ -854,17 +856,19 @@ export const ClipBlock = memo(function ClipBlock({
                 </button>
                 {speedMenuOpen && (
                   <div
+                    className="elah-root"
                     style={{
                       position: 'absolute',
                       left: '100%',
                       top: 0,
                       marginLeft: 2,
-                      background: `var(--elah-menu-bg)`,
-                      border: `1px solid var(--elah-menu-border)`,
+                      background: 'var(--elah-menu-bg)',
+                      border: '1px solid var(--elah-menu-border)',
                       borderRadius: 6,
                       padding: '4px 0',
                       minWidth: 80,
-                      boxShadow: `var(--elah-menu-shadow)`,
+                      boxShadow: 'var(--elah-menu-shadow)',
+                      color: 'var(--elah-text)',
                     }}
                   >
                     {[0.5, 1, 1.5, 2, 4].map((speed) => (
@@ -882,14 +886,14 @@ export const ClipBlock = memo(function ClipBlock({
                           border: 'none',
                           color:
                             (clip.speed ?? 1) === speed
-                              ? 'var(--elah-accent, currentColor)'
-                              : 'var(--elah-menu-text, inherit)',
+                              ? 'var(--elah-accent)'
+                              : 'var(--elah-text)',
                           fontSize: 13,
                           cursor: 'pointer',
                           letterSpacing: '0.01em',
                         }}
                         onMouseEnter={(e) => {
-                          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--elah-danger-bg-hover)'
+                          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--elah-bg-elevated)'
                         }}
                         onMouseLeave={(e) => {
                           ;(e.currentTarget as HTMLButtonElement).style.background = 'none'
@@ -913,7 +917,7 @@ export const ClipBlock = memo(function ClipBlock({
                 textAlign: 'left',
                 background: 'none',
                 border: 'none',
-                color: `var(--elah-danger-text)`,
+                color: 'var(--elah-danger-text)',
                 fontSize: 13,
                 cursor: 'pointer',
                 letterSpacing: '0.01em',

@@ -203,6 +203,7 @@
    editor inherits light/dark mode automatically via CSS variable inheritance.
    Clip colours and typography remain hard-coded (editor-domain semantics).   */
 
+:root,
 .elah-root {
   /* The editor uses a fixed cool blue-gray scheme, decoupled from the site's
      warm light/dark theme (it is a dark tool surface in both modes). Re-theme by
