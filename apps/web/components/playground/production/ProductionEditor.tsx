@@ -192,13 +192,9 @@ function PreviewEditButton({ onOpenSheet }: { onOpenSheet: (kind: MobileSheetKin
 }
 
 const INITIAL_TRACKS: InitialTrackConfig[] = [
-  { kind: 'video', name: 'Video' },
-  { kind: 'elements', name: 'Elements' },
-  { kind: 'elements', name: 'Elements 2' },
-  { kind: 'elements', name: 'Elements 3' },
-  { kind: 'elements', name: 'Elements 4' },
+  { kind: 'video', name: 'Video / Image' },
   { kind: 'audio', name: 'Audio (Main)' },
-  { kind: 'audio', name: 'Audio 2' },
+  { kind: 'elements', name: 'Elements' },
 ]
 
 // Base Tailwind classes for toolbar buttons
